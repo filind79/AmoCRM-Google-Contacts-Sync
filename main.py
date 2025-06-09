@@ -9,6 +9,17 @@ openai.api_key = os.getenv("OPENAI_API_KEY")
 
 app = FastAPI()
 
+from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Можно указать ["https://biostop.by"] для безопасности
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
 @app.post("/api/recolor")
 async def recolor_roof(image: UploadFile = File(...), color: str = Form(...)):
     temp_filename = f"temp_{uuid.uuid4().hex}.png"
