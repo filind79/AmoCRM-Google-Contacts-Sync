@@ -19,7 +19,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
 @app.post("/api/recolor")
 async def recolor_roof(image: UploadFile = File(...), color: str = Form(...)):
     temp_filename = f"temp_{uuid.uuid4().hex}.png"

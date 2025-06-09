@@ -1,1 +1,4 @@
-fastapi\nuvicorn\nopenai\npython-multipart
+fastapi
+uvicorn
+openai
+python-multipart
