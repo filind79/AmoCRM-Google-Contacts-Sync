@@ -1,27 +1,24 @@
-from fastapi import FastAPI, File, UploadFile, Form
+from fastapi import FastAPI, Form
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import openai
 import os
 
-# Устанавливаем API-ключ
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
 app = FastAPI()
 
-# Разрешаем CORS — чтобы можно было отправлять запросы с сайта
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Можно заменить на ["https://biostop.by"] для безопасности
+    allow_origins=["*"],  # Лучше заменить на ["https://biostop.by"] в боевой версии
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Временный маршрут: генерируем картинку с нужным цветом крыши
 @app.post("/api/recolor")
-async def recolor_roof(image: UploadFile = File(...), color: str = Form(...)):
-    prompt = f"A modern house with a roof painted in color {color}, viewed in daylight, beautiful photo, blue sky, lush green grass"
+async def recolor_roof(color: str = Form(...)):
+    prompt = f"A beautiful modern house with a roof painted in {color}, daylight, blue sky, green grass"
 
     try:
         response = openai.images.generate(
