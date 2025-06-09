@@ -19,10 +19,9 @@ app.add_middleware(
 @app.post("/api/recolor")
 async def recolor_roof(color: str = Form(...)):
     prompt = (
-    f"A modern detached house with a sloped roof painted in {color_name}, "
-    f"sunny weather, blue sky, green grass in front, photorealistic image"
-)
-
+        f"A modern detached house with a sloped roof painted in {color}, "
+        f"sunny weather, blue sky, green grass in front, photorealistic image"
+    )
 
     try:
         response = openai.images.generate(
