@@ -10,7 +10,7 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Лучше заменить на ["https://biostop.by"] в боевой версии
+    allow_origins=["https://biostop.by"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
