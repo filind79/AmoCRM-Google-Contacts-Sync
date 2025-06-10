@@ -29,14 +29,13 @@ async def recolor_roof(color: str = Form(...)):
     print(f"🎨 Prompt: {prompt}")
 
     try:
-        response = openai.images.generate(
-            model="dall-e-3",
+        response = openai.Image.create(
             prompt=prompt,
             n=1,
             size="1024x1024",
-            response_format="url"  # 🔧 ОБЯЗАТЕЛЬНО для DALL-E 3
+            response_format="url"
         )
-        image_url = response.data[0].url
+        image_url = response["data"][0]["url"]
         return JSONResponse(content={"image_url": image_url})
     except Exception as e:
         print("❌ Ошибка при генерации изображения:")
