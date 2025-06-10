@@ -3,6 +3,7 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import openai
 import os
+import traceback  # ⬅️ добавим для логирования
 
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
@@ -19,7 +20,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
 @app.post("/api/recolor")
 async def recolor_roof(color: str = Form(...)):
     prompt = (
@@ -34,7 +34,10 @@ async def recolor_roof(color: str = Form(...)):
             n=1,
             size="1024x1024"
         )
+        print(response)  # ⬅️ временно выводим ответ
         image_url = response.data[0].url
         return JSONResponse(content={"image_url": image_url})
     except Exception as e:
+        print("❌ Ошибка при генерации изображения:")
+        print(traceback.format_exc())  # ⬅️ печатаем стек ошибки
         return JSONResponse(status_code=500, content={"error": str(e)})
