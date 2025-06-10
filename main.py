@@ -3,7 +3,7 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import openai
 import os
-import traceback  # Добавляем для печати ошибок
+import traceback
 
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
@@ -26,19 +26,19 @@ async def recolor_roof(color: str = Form(...)):
         f"A modern detached house with a sloped roof painted in {color}, "
         f"sunny weather, blue sky, green grass in front, photorealistic image"
     )
-    print(f"🎨 Prompt: {prompt}")  # логируем промпт
+    print(f"🎨 Prompt: {prompt}")
 
     try:
         response = openai.images.generate(
             model="dall-e-3",
             prompt=prompt,
             n=1,
-            size="1024x1024"
+            size="1024x1024",
+            response_format="url"  # 🔧 ОБЯЗАТЕЛЬНО для DALL-E 3
         )
-        print("✅ OpenAI response:", response)
         image_url = response.data[0].url
         return JSONResponse(content={"image_url": image_url})
     except Exception as e:
         print("❌ Ошибка при генерации изображения:")
-        print(traceback.format_exc())  # покажет причину
+        print(traceback.format_exc())
         return JSONResponse(status_code=500, content={"error": str(e)})
