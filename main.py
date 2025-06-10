@@ -10,11 +10,15 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://biostop.by"],
+    allow_origins=[
+        "https://biostop.by",
+        "https://www.biostop.by"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 @app.post("/api/recolor")
 async def recolor_roof(color: str = Form(...)):
