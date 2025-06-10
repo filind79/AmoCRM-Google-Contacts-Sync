@@ -1,20 +1,16 @@
 from fastapi import FastAPI, Form
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-import openai
 import os
-import traceback
+from openai import OpenAI
 
-openai.api_key = os.getenv("OPENAI_API_KEY")
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://biostop.by",
-        "https://www.biostop.by"
-    ],
+    allow_origins=["https://biostop.by", "https://www.biostop.by"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -23,21 +19,20 @@ app.add_middleware(
 @app.post("/api/recolor")
 async def recolor_roof(color: str = Form(...)):
     prompt = (
-        f"A modern detached house with a sloped roof painted in {color}, "
-        f"sunny weather, blue sky, green grass in front, photorealistic image"
+        f"A photorealistic image of a modern detached house with a sloped roof, "
+        f"roof color: {color}, sunny weather, blue sky, green lawn in front"
     )
-    print(f"🎨 Prompt: {prompt}")
+    print("🎨 Prompt:", prompt)
 
     try:
-        response = openai.Image.create(
+        response = client.images.generate(
+            model="dall-e-3",
             prompt=prompt,
-            n=1,
             size="1024x1024",
-            response_format="url"
+            n=1
         )
-        image_url = response["data"][0]["url"]
+        image_url = response.data[0].url
         return JSONResponse(content={"image_url": image_url})
     except Exception as e:
-        print("❌ Ошибка при генерации изображения:")
-        print(traceback.format_exc())
+        print("❌ Ошибка при генерации изображения:", e)
         return JSONResponse(status_code=500, content={"error": str(e)})
