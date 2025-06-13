@@ -4,10 +4,46 @@ from fastapi.middleware.cors import CORSMiddleware
 from openai import OpenAI
 import base64
 import os
+from dotenv import load_dotenv   # ← добавьте эту строку
+load_dotenv()                    # ← и эту
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 app = FastAPI()
+# ===== Chat endpoint (SSE) =====
+from fastapi import Request
+from sse_starlette.sse import EventSourceResponse
+
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+SYSTEM_PROMPT = (
+    "Ты — эксперт по бережной мойке и покраске шиферных крыш в Беларуси. "
+    "Отвечай дружелюбно, до 200 слов, в конце предлагай услуги biostop.by. "
+    "Вопросы вне тематики крыш вежливо отклоняй."
+)
+
+@app.post("/chat")
+async def chat(request: Request):
+    body = await request.json()
+    user_messages = body.get("messages", [])
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}] + user_messages
+
+    async def token_stream():
+        response = await client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=messages,
+            stream=True,
+            temperature=0.3,
+        )
+        async for chunk in response:
+            delta = chunk.choices[0].delta.content or ""
+            if delta:
+                yield {"data": delta}
+        yield {"event": "done", "data": ""}
+
+    return EventSourceResponse(token_stream(), media_type="text/event-stream")
+# ===== /Chat endpoint =====
+
 
 app.add_middleware(
     CORSMiddleware,
