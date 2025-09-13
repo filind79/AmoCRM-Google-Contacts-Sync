@@ -28,3 +28,9 @@ Visit `/auth/google/start` and `/auth/amocrm/start` to complete OAuth flows.
 ```bash
 pytest
 ```
+
+## Admin interface
+
+The admin UI is available at `/admin` and is protected with HTTP Basic Auth.
+Set `ADMIN_BASIC_USER` and `ADMIN_BASIC_PASS` in environment (see `.env.example`).
+It provides pages to manage users and jobs. Remove the credentials to disable the interface (requests to `/admin` will return 404).
