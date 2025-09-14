@@ -9,8 +9,8 @@ app = FastAPI()
 
 
 @app.on_event("startup")
-def _startup():
-    # Bind engine and ensure tables exist
+def _startup() -> None:
+    # Привязать engine и создать таблицы при первом запуске
     init_db()
 
 
