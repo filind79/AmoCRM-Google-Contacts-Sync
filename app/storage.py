@@ -27,13 +27,16 @@ def get_engine():
 
 
 def get_session():
-    # Ensure engine is created and SessionLocal is bound
+    # Важно: перед выдачей сессии убедиться, что SessionLocal привязан к engine
     get_engine()
     return SessionLocal()
 
 
-def init_db():
-    """Create tables if they don't exist (first run / ephemeral FS)."""
+def init_db() -> None:
+    """
+    Одноразовая инициализация схемы БД на старте сервиса.
+    Создаёт таблицы, если их ещё нет (tokens, links).
+    """
     eng = get_engine()
     Base.metadata.create_all(bind=eng)
 
