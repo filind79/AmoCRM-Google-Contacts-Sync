@@ -3,8 +3,15 @@ from fastapi import FastAPI
 from app.auth import router as auth_router
 from app.webhooks import router as webhook_router
 from app.backfill import router as backfill_router
+from app.storage import init_db
 
 app = FastAPI()
+
+
+@app.on_event("startup")
+def _startup():
+    # Bind engine and ensure tables exist
+    init_db()
 
 
 @app.get("/health")

@@ -27,7 +27,15 @@ def get_engine():
 
 
 def get_session():
+    # Ensure engine is created and SessionLocal is bound
+    get_engine()
     return SessionLocal()
+
+
+def init_db():
+    """Create tables if they don't exist (first run / ephemeral FS)."""
+    eng = get_engine()
+    Base.metadata.create_all(bind=eng)
 
 
 class Link(Base):

@@ -2,6 +2,7 @@ fastapi
 uvicorn[standard]
 httpx
 sqlalchemy
+psycopg[binary]
 alembic
 python-dotenv
 loguru
