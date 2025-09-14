@@ -1,9 +1,6 @@
-from datetime import datetime
 from typing import Any, Dict
 
 import httpx
-
-from app.config import settings
 from app.storage import get_session, get_token
 from app.utils import normalize_email, normalize_phone, unique
 
