@@ -15,6 +15,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
       - name: Lint
-        run: ruff app tests
+        run: ruff check app tests --output-format=github
       - name: Test
         run: pytest
