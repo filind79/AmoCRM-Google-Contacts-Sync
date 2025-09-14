@@ -36,6 +36,13 @@ Set a shared secret in `DEBUG_SECRET` (e.g. in Render service settings) to enabl
 Example cURL calls:
 
 ```bash
+# Prefer using the X-Debug-Secret header
+curl -H "X-Debug-Secret: $DEBUG_SECRET" "http://localhost:8000/debug/google/ping"
+curl -H "X-Debug-Secret: $DEBUG_SECRET" "http://localhost:8000/debug/google/contacts?limit=3"
+curl -H "X-Debug-Secret: $DEBUG_SECRET" "http://localhost:8000/debug/amo/ping"
+curl -H "X-Debug-Secret: $DEBUG_SECRET" "http://localhost:8000/debug/db/token"
+
+# Legacy query parameter (less preferable)
 curl "http://localhost:8000/debug/google/ping?key=$DEBUG_SECRET"
 curl "http://localhost:8000/debug/google/contacts?limit=3&key=$DEBUG_SECRET"
 curl "http://localhost:8000/debug/amo/ping?key=$DEBUG_SECRET"

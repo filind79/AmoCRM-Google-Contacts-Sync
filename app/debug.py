@@ -3,21 +3,14 @@ from __future__ import annotations
 from typing import Any, List
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 
 from app.config import settings
+from app.security import require_debug_secret
 from app.storage import Token, get_session, get_token
 
 router = APIRouter(prefix="/debug", tags=["debug"])
-
-
-def require_debug_key(key: str | None = Query(None)) -> None:
-    secret = settings.debug_secret
-    if not secret:
-        raise HTTPException(status_code=500, detail="DEBUG_SECRET is not set")
-    if key != secret:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
 
 
 async def _refresh_google_access_token(refresh_token: str) -> str:
@@ -44,7 +37,7 @@ async def _get_google_access_token() -> str:
 
 
 @router.get("/google/ping")
-async def google_ping(_=Depends(require_debug_key)) -> dict[str, Any]:
+async def google_ping(_=Depends(require_debug_secret)) -> dict[str, Any]:
     access_token = await _get_google_access_token()
     headers = {"Authorization": f"Bearer {access_token}"}
     url = "https://people.googleapis.com/v1/people/me"
@@ -62,7 +55,7 @@ async def google_ping(_=Depends(require_debug_key)) -> dict[str, Any]:
 
 
 @router.get("/google/contacts")
-async def google_contacts(limit: int = 10, _=Depends(require_debug_key)) -> dict[str, Any]:
+async def google_contacts(limit: int = 10, _=Depends(require_debug_secret)) -> dict[str, Any]:
     access_token = await _get_google_access_token()
     headers = {"Authorization": f"Bearer {access_token}"}
     limit = max(1, min(limit, 50))
@@ -92,7 +85,7 @@ async def google_contacts(limit: int = 10, _=Depends(require_debug_key)) -> dict
 
 
 @router.get("/amo/ping")
-async def amo_ping(_=Depends(require_debug_key)) -> dict[str, Any]:
+async def amo_ping(_=Depends(require_debug_secret)) -> dict[str, Any]:
     base_url = settings.amo_base_url.rstrip("/")
     token = settings.amo_long_lived_token
     if not base_url or not token:
@@ -113,7 +106,7 @@ async def amo_ping(_=Depends(require_debug_key)) -> dict[str, Any]:
 
 
 @router.get("/db/token")
-async def db_token(_=Depends(require_debug_key)) -> dict[str, Any]:
+async def db_token(_=Depends(require_debug_secret)) -> dict[str, Any]:
     session = get_session()
     tokens = session.execute(select(Token)).scalars().all()
     session.close()
