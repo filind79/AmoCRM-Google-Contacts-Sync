@@ -1,5 +1,7 @@
 from typing import Any, Dict, List
 
+import os
+
 import httpx
 
 from app.config import settings
@@ -10,6 +12,11 @@ AMO_HEADERS = {"Content-Type": "application/json"}
 
 
 async def get_access_token() -> str:
+    # 1) env-фолбэк: используем долгосрочный токен, если задан
+    env_token = os.getenv("AMO_LONG_LIVED_TOKEN") or os.getenv("AMO_ACCESS_TOKEN")
+    if env_token:
+        return env_token
+    # 2) иначе — из БД
     session = get_session()
     token = get_token(session, "amocrm")
     if not token:

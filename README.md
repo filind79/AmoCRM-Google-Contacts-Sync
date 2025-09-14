@@ -13,11 +13,16 @@ uvicorn app.main:app --reload
 
 Create `.env` from `.env.example` and fill credentials.
 
-## Docker
+## Docker / Render
 
 ```bash
 docker-compose up --build
 ```
+
+### Render
+- Dockerfile уже выполняет `alembic upgrade head` и читает порт из `${PORT}`.
+- Если используете долгосрочный токен Amo:
+  - установите `AMO_LONG_LIVED_TOKEN` в Environment и не проходите OAuth Amo.
 
 ## OAuth
 
