@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, List
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 
 from app.config import settings
@@ -17,7 +17,7 @@ def require_debug_key(key: str | None = Query(None)) -> None:
     if not secret:
         raise HTTPException(status_code=500, detail="DEBUG_SECRET is not set")
     if key != secret:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+        raise HTTPException(status_code=403, detail="Forbidden")
 
 
 async def _refresh_google_access_token(refresh_token: str) -> str:
