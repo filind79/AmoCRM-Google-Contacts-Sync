@@ -27,7 +27,15 @@ def get_engine():
 
 
 def get_session():
+    # гарантируем, что Session привязан к engine
+    get_engine()
     return SessionLocal()
+
+
+def init_db():
+    # fallback на случай, если миграции не катятся — создаём таблицы
+    eng = get_engine()
+    Base.metadata.create_all(eng)
 
 
 class Link(Base):
