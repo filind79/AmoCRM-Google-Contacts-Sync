@@ -1,9 +1,8 @@
 from datetime import datetime, timedelta
-from typing import Optional
 from urllib.parse import urlencode
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter
 from fastapi.responses import RedirectResponse
 
 from app.config import settings
