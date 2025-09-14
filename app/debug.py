@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, List
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Header, Query
 from sqlalchemy import select
 
 from app.config import settings
@@ -12,11 +12,15 @@ from app.storage import Token, get_session, get_token
 router = APIRouter(prefix="/debug", tags=["debug"])
 
 
-def require_debug_key(key: str | None = Query(None)) -> None:
+def require_debug_key(
+    x_debug_secret: str | None = Header(default=None, alias="X-Debug-Secret"),
+    key: str | None = Query(None),
+) -> None:
     secret = settings.debug_secret
     if not secret:
         raise HTTPException(status_code=500, detail="DEBUG_SECRET is not set")
-    if key != secret:
+    provided = x_debug_secret or key
+    if provided != secret:
         raise HTTPException(status_code=403, detail="Forbidden")
 
 
