@@ -11,6 +11,7 @@ class Settings:
     amo_client_id: str = os.getenv("AMO_CLIENT_ID", "")
     amo_client_secret: str = os.getenv("AMO_CLIENT_SECRET", "")
     amo_redirect_uri: str = os.getenv("AMO_REDIRECT_URI", "http://localhost:8000/oauth/amocrm/callback")
+    amo_long_lived_token: str = os.getenv("AMO_LONG_LIVED_TOKEN", "")
 
     google_client_id: str = os.getenv("GOOGLE_CLIENT_ID", "")
     google_client_secret: str = os.getenv("GOOGLE_CLIENT_SECRET", "")
@@ -18,6 +19,7 @@ class Settings:
     google_redirect_uri: str = os.getenv("GOOGLE_REDIRECT_URI", "http://localhost:8000/oauth/google/callback")
 
     webhook_shared_secret: str = os.getenv("WEBHOOK_SHARED_SECRET", "")
+    debug_secret: str = os.getenv("DEBUG_SECRET", "")
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
 
 

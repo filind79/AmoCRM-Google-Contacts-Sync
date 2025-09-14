@@ -3,6 +3,7 @@ from fastapi import FastAPI
 from app.auth import router as auth_router
 from app.webhooks import router as webhook_router
 from app.backfill import router as backfill_router
+from app.debug import router as debug_router
 from app.storage import init_db
 
 app = FastAPI()
@@ -22,3 +23,4 @@ async def health() -> dict[str, str]:
 app.include_router(auth_router)
 app.include_router(webhook_router)
 app.include_router(backfill_router)
+app.include_router(debug_router)
