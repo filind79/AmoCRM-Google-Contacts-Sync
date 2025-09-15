@@ -172,3 +172,12 @@ def dry_run_compare(
         },
     }
     return result
+
+
+async def apply_contacts_to_google(limit: int, since_days: Optional[int] = None) -> Dict[str, Any]:
+    """Apply AmoCRM contacts to Google (placeholder).
+
+    This stub allows the routes to import the function while tests monkeypatch
+    it with a real implementation.
+    """
+    return {"limit": limit, "since_days": since_days}
