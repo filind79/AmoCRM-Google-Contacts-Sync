@@ -25,8 +25,6 @@ async def contacts_dry_run(
     direction = _validate_direction(direction)
     try:
         amo_contacts = await fetch_amo_contacts(limit) if direction in {"both", "amo"} else []
-    except HTTPException as e:
-        raise e
     except Exception as e:  # pragma: no cover - unexpected
         raise HTTPException(status_code=502, detail=f"AmoCRM API error: {e}")
     try:
