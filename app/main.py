@@ -22,7 +22,7 @@ def create_app() -> FastAPI:
         if settings.debug_secret:
             logger.info("Debug router enabled on /debug")
         else:
-            logger.info("Debug router disabled")
+            logger.info("Debug router mounted but inactive (no DEBUG_SECRET)")
 
     @app.get("/health")
     async def health() -> dict[str, str]:
@@ -31,8 +31,7 @@ def create_app() -> FastAPI:
     app.include_router(auth_router)
     app.include_router(webhook_router)
     app.include_router(backfill_router)
-    if settings.debug_secret:
-        app.include_router(debug_router, prefix="/debug")
+    app.include_router(debug_router, prefix="/debug")
     app.include_router(sync_router)
     return app
 

@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-from datetime import datetime
-
 from fastapi import APIRouter, Depends, Header, HTTPException
-from sqlalchemy import text
+from sqlalchemy import select
 
 from app.config import settings
-from app.storage import get_engine, get_session, get_token
+from app.storage import Token, get_session, get_token
 
 router = APIRouter()
 
@@ -14,24 +12,18 @@ router = APIRouter()
 def require_debug_secret(x_debug_secret: str | None = Header(None, alias="X-Debug-Secret")) -> None:
     secret = settings.debug_secret
     if not secret or x_debug_secret != secret:
-        raise HTTPException(status_code=401, detail="invalid debug secret")
-
-
-@router.get("/ping")
-def debug_ping(_=Depends(require_debug_secret)) -> dict[str, str]:
-    return {"status": "ok"}
+        raise HTTPException(status_code=404)
 
 
 @router.get("/db")
 def debug_db(_=Depends(require_debug_secret)) -> dict[str, object]:
-    engine = get_engine()
-    ok = True
+    session = get_session()
     try:
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
-    except Exception:
-        ok = False
-    return {"dialect": engine.dialect.name, "ok": ok}
+        session.execute(select(1))
+        tokens = session.execute(select(Token)).scalars().all()
+        return {"db": "ok", "tokens": len(tokens)}
+    finally:
+        session.close()
 
 
 @router.get("/google")
@@ -40,14 +32,9 @@ def debug_google(_=Depends(require_debug_secret)) -> dict[str, object]:
     try:
         token = get_token(session, "google")
         if not token:
-            return {"has_token": False, "expires_at": None, "will_refresh": False}
+            return {"has_token": False, "expires_at": None, "scopes": None}
         expires = token.expiry.isoformat() if token.expiry else None
-        will_refresh = bool(token.refresh_token and token.expiry and token.expiry <= datetime.utcnow())
-        return {
-            "has_token": True,
-            "expires_at": expires,
-            "will_refresh": will_refresh,
-        }
+        return {"has_token": True, "expires_at": expires, "scopes": token.scopes}
     finally:
         session.close()
 
@@ -57,6 +44,6 @@ def debug_amo(_=Depends(require_debug_secret)) -> dict[str, object]:
     session = get_session()
     try:
         token = get_token(session, "amocrm")
-        return {"has_token": bool(token), "base_url": settings.amo_base_url}
+        return {"base_url": settings.amo_base_url, "has_token": bool(token)}
     finally:
         session.close()
