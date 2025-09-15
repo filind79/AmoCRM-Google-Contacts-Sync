@@ -12,13 +12,14 @@ class DummyResponse:
     def __init__(self, status_code: int, data: dict | None = None):
         self.status_code = status_code
         self._data = data or {}
+        self.headers = {}
 
     def json(self):
         return self._data
 
     def raise_for_status(self):
         if self.status_code >= 400:
-            raise httpx.HTTPStatusError("err", request=None, response=None)
+            raise httpx.HTTPStatusError("err", request=None, response=self)
 
 
 def test_token_refresh(monkeypatch):
@@ -59,8 +60,10 @@ def test_people_client_retries(monkeypatch):
         return "t2"
 
     class FakeClient:
+        calls = 0
+
         def __init__(self, *args, **kwargs):  # noqa: D401, ANN001, ARG002
-            self.calls = 0
+            pass
 
         async def __aenter__(self):  # noqa: D401
             return self
@@ -68,9 +71,10 @@ def test_people_client_retries(monkeypatch):
         async def __aexit__(self, exc_type, exc, tb):  # noqa: D401, ANN001, ARG002
             return False
 
-        async def get(self, url, params=None, headers=None):  # noqa: D401, ANN001
-            self.calls += 1
-            if self.calls == 1:
+        async def request(self, method, url, params=None, headers=None, json=None):  # noqa: D401, ANN001
+            assert method == "GET"
+            FakeClient.calls += 1
+            if FakeClient.calls == 1:
                 return DummyResponse(401)
             return DummyResponse(
                 200,
