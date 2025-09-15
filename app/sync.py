@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 from fastapi import HTTPException
@@ -37,32 +37,13 @@ async def fetch_amo_contacts(limit: int) -> List[Dict[str, Any]]:
     return items
 
 
-async def fetch_google_contacts(limit: int) -> List[Dict[str, Any]]:
-    token = await google_people.get_access_token()
-    headers = {"Authorization": f"Bearer {token}"}
-    params = {
-        "personFields": "names,emailAddresses,phoneNumbers,metadata",
-        "pageSize": limit,
-    }
-    url = "https://people.googleapis.com/v1/people/me/connections"
-    async with httpx.AsyncClient(timeout=20) as client:
-        resp = await client.get(url, params=params, headers=headers)
-    if resp.status_code != 200:
-        raise HTTPException(status_code=502, detail=f"Google API error: {resp.text}")
-    data = resp.json().get("connections", [])
+async def fetch_google_contacts(limit: int, since_days: Optional[int] = None) -> List[Dict[str, Any]]:
+    contacts = await google_people.list_contacts(limit, since_days)
     items: List[Dict[str, Any]] = []
-    for person in data:
-        names = person.get("names", [])
-        emails = [e.get("value") for e in person.get("emailAddresses", []) if e.get("value")]
-        phones = [p.get("value") for p in person.get("phoneNumbers", []) if p.get("value")]
-        items.append(
-            {
-                "resourceName": person.get("resourceName"),
-                "name": names[0].get("displayName") if names else "",
-                "emails": emails,
-                "phones": phones,
-            }
-        )
+    for c in contacts:
+        emails = [c.email] if c.email else []
+        phones = [c.phone] if c.phone else []
+        items.append({"resourceName": c.resource_id, "name": c.name, "emails": emails, "phones": phones})
     return items
 
 
