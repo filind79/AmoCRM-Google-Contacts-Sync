@@ -29,15 +29,19 @@ Visit `/auth/google/start` and `/auth/amocrm/start` to complete OAuth flows.
 pytest
 ```
 
-## Diagnostics
+## Debug endpoints
 
-Set a shared secret in `DEBUG_SECRET` (e.g. in Render service settings) to enable read-only diagnostic endpoints. These endpoints perform no writes and can be removed or disabled in production if desired.
+Set the `DEBUG_SECRET` environment variable to enable read-only diagnostic routes under `/debug`. Each request must include header `X-Debug-Secret` with the same value.
 
-Example cURL calls:
+Available endpoints:
+
+- `GET /debug/ping` → `{"status":"ok"}`
+- `GET /debug/db` → database dialect and ping status
+- `GET /debug/google` → whether a Google token exists in DB
+- `GET /debug/amo` → whether an AmoCRM token exists and base URL configured
+
+Example:
 
 ```bash
-curl "http://localhost:8000/debug/google/ping?key=$DEBUG_SECRET"
-curl "http://localhost:8000/debug/google/contacts?limit=3&key=$DEBUG_SECRET"
-curl "http://localhost:8000/debug/amo/ping?key=$DEBUG_SECRET"
-curl "http://localhost:8000/debug/db/token?key=$DEBUG_SECRET"
+curl -H "X-Debug-Secret: $DEBUG_SECRET" http://localhost:8000/debug/ping
 ```
