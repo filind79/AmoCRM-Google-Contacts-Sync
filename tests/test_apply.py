@@ -23,24 +23,30 @@ def test_apply_upserts(monkeypatch):
             {"id": 3, "name": "c", "emails": ["c@example.com"], "phones": []},
         ]
 
-    async def fake_search(key):
-        if key == "a@example.com":
-            return {
-                "resourceName": "people/1",
-                "etag": "e1",
-                "names": [{"displayName": "old"}],
-                "emails": ["a@example.com"],
-                "phones": [],
-            }
-        if key == "b@example.com":
-            return {
-                "resourceName": "people/2",
-                "etag": "e2",
-                "names": [{"displayName": "b"}],
-                "emails": ["b@example.com"],
-                "phones": [],
-            }
-        return None
+    async def fake_fetch_google(limit, since_days, amo_contacts, list_existing):  # noqa: ARG001
+        items = []
+        for c in amo_contacts:
+            if "a@example.com" in c.get("emails", []):
+                items.append(
+                    {
+                        "resourceName": "people/1",
+                        "name": "old",
+                        "emails": ["a@example.com"],
+                        "phones": [],
+                        "etag": "e1",
+                    }
+                )
+            if "b@example.com" in c.get("emails", []):
+                items.append(
+                    {
+                        "resourceName": "people/2",
+                        "name": "b",
+                        "emails": ["b@example.com"],
+                        "phones": [],
+                        "etag": "e2",
+                    }
+                )
+        return items, {}
 
     updates: list[tuple[str, str, dict]] = []
 
@@ -50,16 +56,14 @@ def test_apply_upserts(monkeypatch):
 
     creates: list[int] = []
 
-    async def fake_upsert(amo_id, data):  # noqa: ARG001
-        creates.append(amo_id)
-        return {"resourceName": f"people/{amo_id}", "action": "create"}
+    async def fake_create(data):
+        creates.append(data["external_id"])
+        return {"resourceName": f"people/{data['external_id']}"}
 
     monkeypatch.setattr(sync_module, "fetch_amo_contacts", fake_fetch_amo)
-    monkeypatch.setattr(sync_module.google_people, "search_contact", fake_search)
+    monkeypatch.setattr(sync_module, "fetch_google_contacts", fake_fetch_google)
     monkeypatch.setattr(sync_module.google_people, "update_contact", fake_update)
-    monkeypatch.setattr(
-        sync_module.google_people, "upsert_contact_by_external_id", fake_upsert
-    )
+    monkeypatch.setattr(sync_module.google_people, "create_contact", fake_create)
 
     app = create(monkeypatch, "s")
     with TestClient(app) as client:
@@ -76,6 +80,7 @@ def test_apply_upserts(monkeypatch):
         assert creates == [3]
         assert [u[0] for u in updates] == ["people/1"]
         assert updates[0][1] == "e1"
+        assert updates[0][2] == {"name": "a"}
 
 
 def test_apply_missing_etag(monkeypatch):
@@ -84,13 +89,19 @@ def test_apply_missing_etag(monkeypatch):
     async def fake_fetch_amo(limit, since_days):  # noqa: ARG001
         return [{"id": 1, "name": "a", "emails": ["a@example.com"], "phones": []}]
 
-    async def fake_search(key):  # noqa: ARG001
-        return {
-            "resourceName": "people/1",
-            "names": [{"displayName": "old"}],
-            "emails": ["a@example.com"],
-            "phones": [],
-        }
+    async def fake_fetch_google(limit, since_days, amo_contacts, list_existing):  # noqa: ARG001
+        return (
+            [
+                {
+                    "resourceName": "people/1",
+                    "name": "old",
+                    "emails": ["a@example.com"],
+                    "phones": [],
+                    "etag": None,
+                }
+            ],
+            {},
+        )
 
     updates: list[tuple[str, str, dict]] = []
 
@@ -98,15 +109,13 @@ def test_apply_missing_etag(monkeypatch):
         updates.append((resource_name, etag, data))
         return {}
 
-    async def fake_upsert(amo_id, data):  # noqa: ARG001
-        return {"resourceName": f"people/{amo_id}", "action": "create"}
+    async def fake_create(data):  # pragma: no cover - should not run
+        return {"resourceName": f"people/{data['external_id']}"}
 
     monkeypatch.setattr(sync_module, "fetch_amo_contacts", fake_fetch_amo)
-    monkeypatch.setattr(sync_module.google_people, "search_contact", fake_search)
+    monkeypatch.setattr(sync_module, "fetch_google_contacts", fake_fetch_google)
     monkeypatch.setattr(sync_module.google_people, "update_contact", fake_update)
-    monkeypatch.setattr(
-        sync_module.google_people, "upsert_contact_by_external_id", fake_upsert
-    )
+    monkeypatch.setattr(sync_module.google_people, "create_contact", fake_create)
 
     app = create(monkeypatch, "s")
     with TestClient(app) as client:
@@ -216,11 +225,18 @@ def test_apply_skips_none_custom_fields_contacts_no_crash(monkeypatch):
     async def fake_upsert(amo_id, data):  # noqa: ARG001
         return {"resourceName": f"people/{amo_id}", "action": "create"}
 
+    async def fake_fetch_google(limit, since_days, amo_contacts, list_existing):  # noqa: ARG001
+        return ([], {})
+
+    created: list[int] = []
+
+    async def fake_create(data):
+        created.append(data["external_id"])
+        return {"resourceName": f"people/{data['external_id']}"}
+
     monkeypatch.setattr(sync_module, "fetch_amo_contacts", fake_fetch)
-    monkeypatch.setattr(sync_module.google_people, "search_contact", lambda key: None)
-    monkeypatch.setattr(
-        sync_module.google_people, "upsert_contact_by_external_id", fake_upsert
-    )
+    monkeypatch.setattr(sync_module, "fetch_google_contacts", fake_fetch_google)
+    monkeypatch.setattr(sync_module.google_people, "create_contact", fake_create)
 
     app = create(monkeypatch, "s")
     with TestClient(app) as client:
@@ -231,4 +247,5 @@ def test_apply_skips_none_custom_fields_contacts_no_crash(monkeypatch):
         assert resp.status_code == 200
         data = resp.json()
         assert data["created"] == 1
+        assert created == [1]
 

@@ -234,6 +234,11 @@ async def create_contact(data: Dict[str, Any]) -> Dict[str, Any]:
         headers = await _token_headers(session)
         headers["Content-Type"] = "application/json"
         body: Dict[str, Any] = {"names": [{"displayName": data.get("name", "")}]}
+        external_id = data.get("external_id")
+        if external_id is not None:
+            body["externalIds"] = [
+                {"value": str(external_id), "type": "AMOCRM"}
+            ]
         phones = unique([normalize_phone(p) for p in data.get("phones", []) if p])
         if phones:
             body["phoneNumbers"] = [{"value": p} for p in phones]
