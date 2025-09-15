@@ -206,9 +206,11 @@ async def apply_contacts_to_google(limit: int, since_days: int) -> Dict[str, Any
 
     created_samples: List[Dict[str, Any]] = []
     updated_samples: List[Dict[str, Any]] = []
+    skipped_samples: List[Dict[str, Any]] = []
     errors: List[Dict[str, Any]] = []
     created = 0
     updated = 0
+    skip_existing = 0
     processed = 0
 
     for contact in amo_contacts:
@@ -216,28 +218,62 @@ async def apply_contacts_to_google(limit: int, since_days: int) -> Dict[str, Any
             break
         processed += 1
         try:
-            resp = await google_people.upsert_contact_by_external_id(contact["id"], contact)
-            resource = resp.get("resourceName", "")
-            action = resp.get("action") or "update"
-            logger.info(
-                "Upserted Google contact",
-                extra={"amo_id": contact.get("id"), "google_resource_name": resource, "action": action},
-            )
+            existing = None
+            keys = [normalize_email(e) for e in contact.get("emails", []) if e]
+            keys += [normalize_phone(p) for p in contact.get("phones", []) if p]
+            for key in keys:
+                existing = await google_people.search_contact(key)
+                if existing:
+                    break
             sample = {
                 "amo_id": contact.get("id"),
-                "google_resource_name": resource,
                 "name": contact.get("name"),
                 "phones": contact.get("phones", []),
                 "emails": contact.get("emails", []),
             }
-            if action == "create":
+            if existing:
+                resource = existing.get("resourceName", "")
+                sample["google_resource_name"] = resource
+                g_emails = {normalize_email(e) for e in existing.get("emails", [])}
+                g_phones = {normalize_phone(p) for p in existing.get("phones", [])}
+                missing_emails = [
+                    normalize_email(e)
+                    for e in contact.get("emails", [])
+                    if normalize_email(e) not in g_emails
+                ]
+                missing_phones = [
+                    normalize_phone(p)
+                    for p in contact.get("phones", [])
+                    if normalize_phone(p) not in g_phones
+                ]
+                current_name = ""
+                if existing.get("names"):
+                    current_name = existing["names"][0].get("displayName") or ""
+                new_name = contact.get("name") or ""
+                need_name = new_name != current_name and new_name
+                if missing_emails or missing_phones or need_name:
+                    data: Dict[str, Any] = {"external_id": contact.get("id")}
+                    if need_name:
+                        data["name"] = new_name
+                    if missing_emails:
+                        data["emails"] = list(g_emails | set(missing_emails))
+                    if missing_phones:
+                        data["phones"] = list(g_phones | set(missing_phones))
+                    await google_people.update_contact(resource, data)
+                    updated += 1
+                    if len(updated_samples) < 5:
+                        updated_samples.append(sample)
+                else:
+                    skip_existing += 1
+                    if len(skipped_samples) < 5:
+                        skipped_samples.append(sample)
+            else:
+                resp = await google_people.upsert_contact_by_external_id(contact["id"], contact)
+                resource = resp.get("resourceName", "")
+                sample["google_resource_name"] = resource
                 created += 1
                 if len(created_samples) < 5:
                     created_samples.append(sample)
-            else:
-                updated += 1
-                if len(updated_samples) < 5:
-                    updated_samples.append(sample)
         except Exception as e:  # pragma: no cover - network errors
             errors.append(
                 {
@@ -253,6 +289,11 @@ async def apply_contacts_to_google(limit: int, since_days: int) -> Dict[str, Any
         "processed": processed,
         "created": created,
         "updated": updated,
-        "samples": {"created": created_samples, "updated": updated_samples},
+        "skip_existing": skip_existing,
+        "samples": {
+            "created": created_samples,
+            "updated": updated_samples,
+            "skip_existing": skipped_samples,
+        },
         "errors": errors,
     }
