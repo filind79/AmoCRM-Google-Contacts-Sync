@@ -71,11 +71,18 @@ def test_debug_google_no_token(monkeypatch):
 def test_debug_google_with_token(monkeypatch):
     app = _app_with_secret(monkeypatch, "s")
     from datetime import datetime, timedelta
-    from app.storage import get_session, save_token
+    import app.storage as storage_mod
 
-    session = get_session()
+    session = storage_mod.get_session()
     expiry = datetime.utcnow().replace(microsecond=0) - timedelta(minutes=1)
-    save_token(session, "google", access_token="a", refresh_token="r", expiry=expiry, scopes="")
+    storage_mod.save_token(
+        session,
+        "google",
+        access_token="a",
+        refresh_token="r",
+        expiry=expiry,
+        scopes="",
+    )
     session.close()
 
     with TestClient(app) as client:
