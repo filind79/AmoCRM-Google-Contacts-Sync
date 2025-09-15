@@ -102,6 +102,7 @@ async def contacts_apply(
         raise HTTPException(
             status_code=429,
             detail="Rate limited: please retry later",
+            headers={"Retry-After": str(e.retry_after)},
         ) from e
     except GoogleAuthError as e:
         raise HTTPException(status_code=401, detail="Google auth required") from e

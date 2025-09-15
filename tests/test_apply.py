@@ -153,6 +153,7 @@ def test_apply_rate_limited(monkeypatch):
         )
         assert resp.status_code == 429
         assert resp.json() == {"detail": "Rate limited: please retry later"}
+        assert resp.headers["Retry-After"] == "12"
 
 
 def test_apply_forbidden_without_secret_or_confirm(monkeypatch):
