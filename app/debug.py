@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, Header, HTTPException
 from sqlalchemy import text
 
@@ -33,23 +35,28 @@ def debug_db(_=Depends(require_debug_secret)) -> dict[str, object]:
 
 
 @router.get("/google")
-def debug_google(_=Depends(require_debug_secret)) -> dict[str, bool]:
+def debug_google(_=Depends(require_debug_secret)) -> dict[str, object]:
     session = get_session()
     try:
         token = get_token(session, "google")
-        return {"has_token": bool(token)}
+        if not token:
+            return {"has_token": False, "expires_at": None, "will_refresh": False}
+        expires = token.expiry.isoformat() if token.expiry else None
+        will_refresh = bool(token.refresh_token and token.expiry and token.expiry <= datetime.utcnow())
+        return {
+            "has_token": True,
+            "expires_at": expires,
+            "will_refresh": will_refresh,
+        }
     finally:
         session.close()
 
 
 @router.get("/amo")
-def debug_amo(_=Depends(require_debug_secret)) -> dict[str, bool]:
+def debug_amo(_=Depends(require_debug_secret)) -> dict[str, object]:
     session = get_session()
     try:
         token = get_token(session, "amocrm")
-        return {
-            "has_token": bool(token),
-            "has_base_url": bool(settings.amo_base_url),
-        }
+        return {"has_token": bool(token), "base_url": settings.amo_base_url}
     finally:
         session.close()
