@@ -41,6 +41,10 @@ class GoogleRateLimitError(Exception):
         self.payload = payload or {}
 
 
+class RateLimitError(Exception):
+    pass
+
+
 class _RateLimiter:
     def __init__(self, rpm: int) -> None:
         self.rpm = rpm
@@ -73,7 +77,11 @@ async def _request(method: str, url: str, **kwargs) -> httpx.Response:
     async with httpx.AsyncClient(timeout=10) as client:
         while True:
             await _rate_limiter.acquire()
-            resp = await client.request(method, url, **kwargs)
+            call = getattr(client, method.lower(), None)
+            if call is None:
+                resp = await client.request(method, url, **kwargs)
+            else:
+                resp = await call(url, **kwargs)
             try:
                 resp.raise_for_status()
                 return resp
@@ -305,15 +313,27 @@ async def create_contact(data: Dict[str, Any]) -> Dict[str, Any]:
     try:
         headers = await _token_headers(session)
         headers["Content-Type"] = "application/json"
-        body: Dict[str, Any] = {"names": [{"displayName": data.get("name", "")}]} 
+
+        body: Dict[str, Any] = {"names": [{"displayName": data.get("name", "")}]}
+
+        external_id = data.get("external_id")
+        if external_id is not None:
+            body["externalIds"] = [{"value": str(external_id), "type": "AMOCRM"}]
+
         phones = unique([normalize_phone(p) for p in data.get("phones", []) if p])
         if phones:
             body["phoneNumbers"] = [{"value": p} for p in phones]
+
         emails = unique([normalize_email(e) for e in data.get("emails", []) if e])
         if emails:
             body["emailAddresses"] = [{"value": e} for e in emails]
+
         url = f"{GOOGLE_API_BASE}/people:createContact"
-        resp = await _request("POST", url, headers=headers, json=body)
+        resp = await session.post(url, headers=headers, json=body)
+
+        if getattr(resp, "status_code", None) == 429:
+            raise RateLimitError("rate_limited")
+
         return resp.json()
     finally:
         session.close()
