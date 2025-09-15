@@ -1,21 +1,56 @@
 from typing import Any, Dict
 
 import httpx
+import logging
+from datetime import datetime, timedelta
+
+from fastapi import HTTPException
 
 from app.storage import get_session, get_token
 from app.utils import normalize_email, normalize_phone, unique
+from app.config import settings
 
 
 GOOGLE_API_BASE = "https://people.googleapis.com/v1"
 
+logger = logging.getLogger(__name__)
+
 
 async def get_access_token() -> str:
     session = get_session()
-    token = get_token(session, "google")
-    if not token:
-        raise RuntimeError("Google token missing")
-    # TODO: refresh token when expired
-    return token.access_token
+    try:
+        token = get_token(session, "google")
+        if not token:
+            raise HTTPException(status_code=400, detail="google token missing")
+        if token.expiry and token.expiry <= datetime.utcnow():
+            if not token.refresh_token:
+                raise HTTPException(status_code=401, detail="google token refresh failed")
+            data = {
+                "client_id": settings.google_client_id,
+                "client_secret": settings.google_client_secret,
+                "grant_type": "refresh_token",
+                "refresh_token": token.refresh_token,
+            }
+            try:
+                async with httpx.AsyncClient(timeout=10) as client:
+                    resp = await client.post("https://oauth2.googleapis.com/token", data=data)
+                resp.raise_for_status()
+                payload = resp.json()
+            except Exception:
+                raise HTTPException(status_code=401, detail="google token refresh failed")
+            expires_in = payload.get("expires_in")
+            token.access_token = payload.get("access_token")
+            token.refresh_token = payload.get("refresh_token") or token.refresh_token
+            token.expiry = (
+                datetime.utcnow() + timedelta(seconds=expires_in)
+                if expires_in is not None
+                else None
+            )
+            session.commit()
+            logger.info("Google token refreshed")
+        return token.access_token
+    finally:
+        session.close()
 
 
 async def upsert_contact_by_external_id(amo_contact_id: int, data: Dict[str, Any]) -> Dict[str, Any]:
