@@ -6,7 +6,13 @@ import random
 
 import pytest
 
-from app.google_people import _parse_rfc3339, _parse_update_time, _request
+from app.google_people import (
+    RateLimitError,
+    _parse_rfc3339,
+    _parse_update_time,
+    _request,
+    create_contact,
+)
 
 
 def test_parse_rfc3339():
@@ -79,3 +85,68 @@ async def test_request_resource_exhausted(monkeypatch):
     resp = await _request("GET", "https://x")
     assert resp.status_code == 200
     assert called and called[0] == 1
+
+
+@pytest.mark.asyncio
+async def test_create_contact_external_id(monkeypatch):
+    class DummyResp:
+        status_code = 200
+
+        def json(self):  # noqa: D401
+            return {"ok": True}
+
+    class DummyClient:
+        def __init__(self):
+            self.payload = None
+
+        async def post(self, url, headers=None, json=None):  # noqa: ANN001
+            self.payload = json
+            return DummyResp()
+
+        def close(self):  # noqa: D401
+            pass
+
+    dummy = DummyClient()
+
+    async def fake_headers(_session):  # noqa: ANN001
+        return {}
+
+    monkeypatch.setattr("app.google_people.get_session", lambda: dummy)
+    monkeypatch.setattr("app.google_people._token_headers", fake_headers)
+
+    data = {
+        "name": "John Doe",
+        "phones": ["+7 (999) 000-11-22"],
+        "emails": ["test@example.com"],
+        "external_id": 123,
+    }
+
+    await create_contact(data)
+
+    assert dummy.payload
+    assert dummy.payload["externalIds"] == [{"value": "123", "type": "AMOCRM"}]
+
+
+@pytest.mark.asyncio
+async def test_create_contact_rate_limited(monkeypatch):
+    class DummyResp:
+        status_code = 429
+
+        def json(self):  # noqa: D401
+            return {}
+
+    class DummyClient:
+        async def post(self, url, headers=None, json=None):  # noqa: ANN001
+            return DummyResp()
+
+        def close(self):  # noqa: D401
+            pass
+
+    async def fake_headers(_session):  # noqa: ANN001
+        return {}
+
+    monkeypatch.setattr("app.google_people.get_session", lambda: DummyClient())
+    monkeypatch.setattr("app.google_people._token_headers", fake_headers)
+
+    with pytest.raises(RateLimitError):
+        await create_contact({"name": "x"})
