@@ -202,44 +202,42 @@ def is_existing_in_google(amo_contact: Dict[str, Any], lookup: Dict[str, set[str
 
 
 async def apply_contacts_to_google(limit: int, since_days: int) -> Dict[str, Any]:
-    fetch_limit = limit * 3
-    amo_contacts = await fetch_amo_contacts(fetch_limit, since_days)
-    google_contacts = await fetch_google_contacts(500, None)
-    lookup = build_google_lookup(google_contacts)
+    amo_contacts = await fetch_amo_contacts(limit, since_days)
 
     created_samples: List[Dict[str, Any]] = []
+    updated_samples: List[Dict[str, Any]] = []
     errors: List[Dict[str, Any]] = []
     created = 0
-    skipped_existing = 0
+    updated = 0
     processed = 0
 
     for contact in amo_contacts:
-        if created >= limit:
+        if processed >= limit:
             break
         processed += 1
-        if is_existing_in_google(contact, lookup):
-            skipped_existing += 1
-            continue
         try:
-            resp = await google_people.create_contact(contact)
+            resp = await google_people.upsert_contact_by_external_id(contact["id"], contact)
             resource = resp.get("resourceName", "")
+            action = resp.get("action") or "update"
             logger.info(
-                "Created Google contact",
-                extra={"amo_id": contact.get("id"), "google_resource_name": resource},
+                "Upserted Google contact",
+                extra={"amo_id": contact.get("id"), "google_resource_name": resource, "action": action},
             )
-            created += 1
-            if len(created_samples) < 5:
-                created_samples.append(
-                    {
-                        "amo_id": contact.get("id"),
-                        "google_resource_name": resource,
-                        "name": contact.get("name"),
-                        "phones": contact.get("phones", []),
-                        "emails": contact.get("emails", []),
-                    }
-                )
-            lookup["emails"].update(normalize_email(e) for e in contact.get("emails", []) if e)
-            lookup["phones"].update(normalize_phone(p) for p in contact.get("phones", []) if p)
+            sample = {
+                "amo_id": contact.get("id"),
+                "google_resource_name": resource,
+                "name": contact.get("name"),
+                "phones": contact.get("phones", []),
+                "emails": contact.get("emails", []),
+            }
+            if action == "create":
+                created += 1
+                if len(created_samples) < 5:
+                    created_samples.append(sample)
+            else:
+                updated += 1
+                if len(updated_samples) < 5:
+                    updated_samples.append(sample)
         except Exception as e:  # pragma: no cover - network errors
             errors.append(
                 {
@@ -254,7 +252,7 @@ async def apply_contacts_to_google(limit: int, since_days: int) -> Dict[str, Any
         "limit": limit,
         "processed": processed,
         "created": created,
-        "skipped_existing": skipped_existing,
-        "created_samples": created_samples,
+        "updated": updated,
+        "samples": {"created": created_samples, "updated": updated_samples},
         "errors": errors,
     }
