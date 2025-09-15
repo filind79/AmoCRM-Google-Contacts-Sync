@@ -23,14 +23,38 @@ def test_apply_upserts(monkeypatch):
             {"id": 3, "name": "c", "emails": ["c@example.com"], "phones": []},
         ]
 
-    upserts: list[tuple[int, str]] = []
+    async def fake_search(key):
+        if key == "a@example.com":
+            return {
+                "resourceName": "people/1",
+                "names": [{"displayName": "old"}],
+                "emails": ["a@example.com"],
+                "phones": [],
+            }
+        if key == "b@example.com":
+            return {
+                "resourceName": "people/2",
+                "names": [{"displayName": "b"}],
+                "emails": ["b@example.com"],
+                "phones": [],
+            }
+        return None
+
+    updates: list[tuple[str, dict]] = []
+
+    async def fake_update(resource_name, data):
+        updates.append((resource_name, data))
+        return {}
+
+    creates: list[int] = []
 
     async def fake_upsert(amo_id, data):  # noqa: ARG001
-        action = "update" if amo_id == 1 else "create"
-        upserts.append((amo_id, action))
-        return {"resourceName": f"people/{amo_id}", "action": action}
+        creates.append(amo_id)
+        return {"resourceName": f"people/{amo_id}", "action": "create"}
 
     monkeypatch.setattr(sync_module, "fetch_amo_contacts", fake_fetch_amo)
+    monkeypatch.setattr(sync_module.google_people, "search_contact", fake_search)
+    monkeypatch.setattr(sync_module.google_people, "update_contact", fake_update)
     monkeypatch.setattr(
         sync_module.google_people, "upsert_contact_by_external_id", fake_upsert
     )
@@ -43,10 +67,12 @@ def test_apply_upserts(monkeypatch):
         )
         assert resp.status_code == 200
         data = resp.json()
-        assert data["created"] == 2
+        assert data["created"] == 1
         assert data["updated"] == 1
+        assert data["skip_existing"] == 1
         assert data["processed"] == 3
-        assert len(upserts) == 3
+        assert creates == [3]
+        assert [u[0] for u in updates] == ["people/1"]
 
 
 def test_apply_forbidden_without_secret_or_confirm(monkeypatch):
@@ -145,6 +171,7 @@ def test_apply_skips_none_custom_fields_contacts_no_crash(monkeypatch):
         return {"resourceName": f"people/{amo_id}", "action": "create"}
 
     monkeypatch.setattr(sync_module, "fetch_amo_contacts", fake_fetch)
+    monkeypatch.setattr(sync_module.google_people, "search_contact", lambda key: None)
     monkeypatch.setattr(
         sync_module.google_people, "upsert_contact_by_external_id", fake_upsert
     )

@@ -16,3 +16,9 @@ def test_is_existing_in_google_no_match():
     amo = {"emails": ["b@example.com"], "phones": ["123"]}
     assert not is_existing_in_google(amo, lookup)
 
+
+def test_is_existing_in_google_empty_lists():
+    lookup = build_google_lookup([])
+    amo = {"emails": [], "phones": []}
+    assert not is_existing_in_google(amo, lookup)
+

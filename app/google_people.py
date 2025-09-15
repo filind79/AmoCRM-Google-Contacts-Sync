@@ -155,3 +155,77 @@ async def create_contact(data: Dict[str, Any]) -> Dict[str, Any]:
     finally:
         session.close()
 
+
+async def search_contact(query: str) -> Optional[Dict[str, Any]]:
+    """Search a contact by phone or email and return basic fields if found."""
+
+    session = get_session()
+    try:
+        headers = await _token_headers(session)
+        params = {
+            "query": query,
+            "readMask": "names,emailAddresses,phoneNumbers",
+        }
+        url = f"{GOOGLE_API_BASE}/people:searchContacts"
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(url, params=params, headers=headers)
+            resp.raise_for_status()
+            results = resp.json().get("results", [])
+            if not results:
+                return None
+            person = results[0].get("person", {})
+            names = person.get("names", [])
+            return {
+                "resourceName": person.get("resourceName", ""),
+                "names": names,
+                "emails": [
+                    e.get("value")
+                    for e in person.get("emailAddresses", [])
+                    if e.get("value")
+                ],
+                "phones": [
+                    p.get("value")
+                    for p in person.get("phoneNumbers", [])
+                    if p.get("value")
+                ],
+            }
+    finally:
+        session.close()
+
+
+async def update_contact(resource_name: str, data: Dict[str, Any]) -> Dict[str, Any]:
+    """Update an existing Google contact with provided fields."""
+
+    session = get_session()
+    try:
+        headers = await _token_headers(session)
+        headers["Content-Type"] = "application/json"
+        body: Dict[str, Any] = {}
+        update_fields: List[str] = []
+        name = data.get("name")
+        if name is not None:
+            body["names"] = [{"displayName": name}]
+            update_fields.append("names")
+        emails = data.get("emails")
+        if emails is not None:
+            body["emailAddresses"] = [{"value": e} for e in emails]
+            update_fields.append("emailAddresses")
+        phones = data.get("phones")
+        if phones is not None:
+            body["phoneNumbers"] = [{"value": p} for p in phones]
+            update_fields.append("phoneNumbers")
+        external_id = data.get("external_id")
+        if external_id is not None:
+            body["externalIds"] = [{"value": str(external_id), "type": "AMOCRM"}]
+            update_fields.append("externalIds")
+        if not update_fields:
+            return {}
+        params = {"updatePersonFields": ",".join(update_fields)}
+        url = f"{GOOGLE_API_BASE}/{resource_name}:updateContact"
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.patch(url, params=params, headers=headers, json=body)
+            resp.raise_for_status()
+            return resp.json()
+    finally:
+        session.close()
+
