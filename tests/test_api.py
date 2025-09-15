@@ -71,15 +71,20 @@ def test_dry_run_direction_amo(monkeypatch):
     async def fake_fetch_amo(limit):  # noqa: ARG001
         return [{"id": 1, "name": "a", "emails": ["a@ex.com"], "phones": []}]
 
+    async def fake_fetch_google(limit, since_days=None):  # noqa: ARG001
+        return []
+
     monkeypatch.setattr(sync_route, "fetch_amo_contacts", fake_fetch_amo)
+    monkeypatch.setattr(sync_route, "fetch_google_contacts", fake_fetch_google)
 
     app = create(monkeypatch)
     with TestClient(app) as client:
         resp = client.get("/sync/contacts/dry-run?limit=10&direction=amo")
         assert resp.status_code == 200
         data = resp.json()
-        assert "amo_to_google" in data["summary"]["actions"]
-        assert "google_to_amo" not in data["summary"]["actions"]
+        assert data["summary"]["amo"]["fetched"] == 1
+        assert data["summary"]["google"]["fetched"] == 0
+        assert data["summary"]["actions"] == {"amo_to_google": {"create": 1, "update": 0}}
         assert len(data["samples"]["amo_only"]) == 1
         assert "google_only" not in data["samples"]
 
@@ -90,15 +95,20 @@ def test_dry_run_direction_google(monkeypatch):
     async def fake_fetch_google(limit, since_days=None):  # noqa: ARG001
         return [{"resourceName": "r1", "name": "g", "emails": ["g@ex.com"], "phones": []}]
 
+    async def fake_fetch_amo(limit):  # noqa: ARG001
+        return []
+
     monkeypatch.setattr(sync_route, "fetch_google_contacts", fake_fetch_google)
+    monkeypatch.setattr(sync_route, "fetch_amo_contacts", fake_fetch_amo)
 
     app = create(monkeypatch)
     with TestClient(app) as client:
         resp = client.get("/sync/contacts/dry-run?limit=10&direction=google")
         assert resp.status_code == 200
         data = resp.json()
-        assert "google_to_amo" in data["summary"]["actions"]
-        assert "amo_to_google" not in data["summary"]["actions"]
+        assert data["summary"]["google"]["fetched"] == 1
+        assert data["summary"]["amo"]["fetched"] == 0
+        assert data["summary"]["actions"] == {"google_to_amo": {"create": 1, "update": 0}}
         assert len(data["samples"]["google_only"]) == 1
         assert "amo_only" not in data["samples"]
 
