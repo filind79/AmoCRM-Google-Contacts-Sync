@@ -8,6 +8,7 @@ an up to date access token is used.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -30,6 +31,7 @@ class Contact:
     name: str
     email: Optional[str]
     phone: Optional[str]
+    update_time: Optional[datetime] = None
 
 
 async def _token_headers(session) -> Dict[str, str]:
@@ -37,33 +39,105 @@ async def _token_headers(session) -> Dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-async def list_contacts(limit: int, since_days: Optional[int] = None) -> List[Contact]:
-    """Fetch a list of contacts from Google People API."""
+def _parse_update_time(person: Dict[str, Any]) -> Optional[datetime]:
+    sources = person.get("metadata", {}).get("sources", [])
+    for src in sources:
+        ts = src.get("updateTime")
+        if ts:
+            try:
+                return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            except ValueError:
+                continue
+    return None
+
+
+async def list_contacts(
+    limit: int,
+    since_days: Optional[int] = None,
+    counters: Optional[Dict[str, int]] = None,
+) -> List[Contact]:
+    """Fetch a list of contacts from Google People API with pagination."""
 
     session = get_session()
     try:
         headers = await _token_headers(session)
-        params = {
-            "personFields": "names,emailAddresses,phoneNumbers",
-            "pageSize": limit,
-        }
         url = f"{GOOGLE_API_BASE}/people/me/connections"
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.get(url, params=params, headers=headers)
-            if resp.status_code == 401:
-                # force refresh and retry once
-                new_token = await force_refresh_google_access_token(session)
-                headers["Authorization"] = f"Bearer {new_token}"
+        collected: List[Contact] = []
+        page_token: Optional[str] = None
+        while len(collected) < limit:
+            params: Dict[str, Any] = {
+                "personFields": "names,emailAddresses,phoneNumbers,metadata",
+                "pageSize": min(200, limit - len(collected)),
+            }
+            if page_token:
+                params["pageToken"] = page_token
+            async with httpx.AsyncClient(timeout=10) as client:
                 resp = await client.get(url, params=params, headers=headers)
                 if resp.status_code == 401:
-                    raise GoogleAuthError("unauthorised", "/auth/google/start")
+                    new_token = await force_refresh_google_access_token(session)
+                    headers["Authorization"] = f"Bearer {new_token}"
+                    resp = await client.get(url, params=params, headers=headers)
+                    if resp.status_code == 401:
+                        raise GoogleAuthError("unauthorised", "/auth/google/start")
+            if counters is not None:
+                counters["requests"] = counters.get("requests", 0) + 1
+            resp.raise_for_status()
+            data = resp.json()
+            persons = data.get("connections", [])
+            if counters is not None:
+                counters["considered"] = counters.get("considered", 0) + len(persons)
+            for person in persons:
+                upd = _parse_update_time(person)
+                if since_days is not None and upd is not None:
+                    if upd < datetime.utcnow() - timedelta(days=since_days):
+                        continue
+                names = person.get("names", [])
+                name = names[0].get("displayName") if names else ""
+                emails = [e.get("value") for e in person.get("emailAddresses", []) if e.get("value")]
+                phones = [p.get("value") for p in person.get("phoneNumbers", []) if p.get("value")]
+                collected.append(
+                    Contact(
+                        resource_id=person.get("resourceName"),
+                        name=name,
+                        email=emails[0] if emails else None,
+                        phone=phones[0] if phones else None,
+                        update_time=upd,
+                    )
+                )
+            page_token = data.get("nextPageToken")
+            if not page_token:
+                break
+    finally:
+        session.close()
+
+    return collected
+
+
+async def search_contacts(
+    query: str,
+    counters: Optional[Dict[str, int]] = None,
+) -> List[Contact]:
+    session = get_session()
+    try:
+        headers = await _token_headers(session)
+        params = {
+            "query": query,
+            "readMask": "names,emailAddresses,phoneNumbers,metadata",
+        }
+        url = f"{GOOGLE_API_BASE}/people:searchContacts"
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(url, params=params, headers=headers)
+        if counters is not None:
+            counters["requests"] = counters.get("requests", 0) + 1
         resp.raise_for_status()
-        data = resp.json().get("connections", [])
+        data = resp.json().get("results", [])
     finally:
         session.close()
 
     contacts: List[Contact] = []
-    for person in data:
+    for item in data:
+        person = item.get("person", {})
+        upd = _parse_update_time(person)
         names = person.get("names", [])
         name = names[0].get("displayName") if names else ""
         emails = [e.get("value") for e in person.get("emailAddresses", []) if e.get("value")]
@@ -74,8 +148,11 @@ async def list_contacts(limit: int, since_days: Optional[int] = None) -> List[Co
                 name=name,
                 email=emails[0] if emails else None,
                 phone=phones[0] if phones else None,
+                update_time=upd,
             )
         )
+    if counters is not None:
+        counters["considered"] = counters.get("considered", 0) + len(contacts)
     return contacts
 
 
