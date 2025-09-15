@@ -31,6 +31,7 @@ class Contact:
     name: str
     email: Optional[str]
     phone: Optional[str]
+    etag: Optional[str] = None
     update_time: Optional[datetime] = None
 
 
@@ -114,6 +115,7 @@ async def list_contacts(
                         name=name,
                         email=emails[0] if emails else None,
                         phone=phones[0] if phones else None,
+                        etag=person.get("etag"),
                         update_time=upd,
                     )
                 )
@@ -161,6 +163,7 @@ async def search_contacts(
                 name=name,
                 email=emails[0] if emails else None,
                 phone=phones[0] if phones else None,
+                etag=person.get("etag"),
                 update_time=upd,
             )
         )
@@ -254,7 +257,7 @@ async def search_contact(query: str) -> Optional[Dict[str, Any]]:
         headers = await _token_headers(session)
         params = {
             "query": query,
-            "readMask": "names,emailAddresses,phoneNumbers",
+            "readMask": "names,emailAddresses,phoneNumbers,metadata",
         }
         url = f"{GOOGLE_API_BASE}/people:searchContacts"
         async with httpx.AsyncClient(timeout=10) as client:
@@ -267,6 +270,7 @@ async def search_contact(query: str) -> Optional[Dict[str, Any]]:
             names = person.get("names", [])
             return {
                 "resourceName": person.get("resourceName", ""),
+                "etag": person.get("etag"),
                 "names": names,
                 "emails": [
                     e.get("value")
@@ -283,14 +287,14 @@ async def search_contact(query: str) -> Optional[Dict[str, Any]]:
         session.close()
 
 
-async def update_contact(resource_name: str, data: Dict[str, Any]) -> Dict[str, Any]:
+async def update_contact(resource_name: str, etag: str, data: Dict[str, Any]) -> Dict[str, Any]:
     """Update an existing Google contact with provided fields."""
 
     session = get_session()
     try:
         headers = await _token_headers(session)
         headers["Content-Type"] = "application/json"
-        body: Dict[str, Any] = {}
+        body: Dict[str, Any] = {"resourceName": resource_name, "etag": etag}
         update_fields: List[str] = []
         name = data.get("name")
         if name is not None:

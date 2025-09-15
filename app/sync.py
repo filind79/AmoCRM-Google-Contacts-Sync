@@ -280,6 +280,16 @@ async def apply_contacts_to_google(limit: int, since_days: int) -> Dict[str, Any
             if existing:
                 resource = existing.get("resourceName", "")
                 sample["google_resource_name"] = resource
+                etag = existing.get("etag")
+                if not etag:
+                    errors.append(
+                        {
+                            "amo_id": contact.get("id"),
+                            "reason": "missing_etag",
+                            "message": "Google contact missing etag",
+                        }
+                    )
+                    continue
                 g_emails = {normalize_email(e) for e in existing.get("emails", [])}
                 g_phones = {normalize_phone(p) for p in existing.get("phones", [])}
                 missing_emails = [
@@ -305,7 +315,7 @@ async def apply_contacts_to_google(limit: int, since_days: int) -> Dict[str, Any
                         data["emails"] = list(g_emails | set(missing_emails))
                     if missing_phones:
                         data["phones"] = list(g_phones | set(missing_phones))
-                    await google_people.update_contact(resource, data)
+                    await google_people.update_contact(resource, etag, data)
                     updated += 1
                     if len(updated_samples) < 5:
                         updated_samples.append(sample)
@@ -320,6 +330,23 @@ async def apply_contacts_to_google(limit: int, since_days: int) -> Dict[str, Any
                 created += 1
                 if len(created_samples) < 5:
                     created_samples.append(sample)
+        except httpx.HTTPStatusError as e:
+            message = str(e)
+            try:
+                err = e.response.json().get("error", {})  # type: ignore[arg-type]
+                status = err.get("status")
+                msg = err.get("message")
+                if status or msg:
+                    message = f"{status}: {msg}" if status and msg else msg or status
+            except Exception:  # pragma: no cover - fallback to default message
+                pass
+            errors.append(
+                {
+                    "amo_id": contact.get("id"),
+                    "reason": "google_api_error",
+                    "message": message,
+                }
+            )
         except Exception as e:  # pragma: no cover - network errors
             errors.append(
                 {
