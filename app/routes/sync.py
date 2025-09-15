@@ -4,7 +4,12 @@ from fastapi import APIRouter, Header, HTTPException, Query
 
 from app.config import settings
 from app.google_auth import GoogleAuthError
-from app.sync import apply_contacts_to_google, fetch_amo_contacts, fetch_google_contacts
+from app.sync import (
+    apply_contacts_to_google,
+    dry_run_compare,
+    fetch_amo_contacts,
+    fetch_google_contacts,
+)
 
 router = APIRouter(prefix="/sync", tags=["sync"])
 
@@ -43,12 +48,35 @@ async def contacts_dry_run(
     except Exception as e:  # pragma: no cover - unexpected
         raise HTTPException(status_code=502, detail=f"Google API error: {e}")
 
+    compare_direction = {
+        "both": "both",
+        "amo": "amo-to-google",
+        "google": "google-to-amo",
+    }[direction]
+    compare = dry_run_compare(amo_contacts, google_contacts, compare_direction)
+
+    actions: dict[str, object] = {}
+    if direction in {"both", "amo"}:
+        actions["amo_to_google"] = compare["actions"]["amo_to_google"]
+    if direction in {"both", "google"}:
+        actions["google_to_amo"] = compare["actions"]["google_to_amo"]
+
+    samples: dict[str, object] = {"updates_preview": compare["samples"]["updates_preview"]}
+    if direction in {"both", "amo"}:
+        samples["amo_only"] = compare["samples"]["amo_only"]
+    if direction in {"both", "google"}:
+        samples["google_only"] = compare["samples"]["google_only"]
+
     return {
         "status": "ok",
         "direction": direction,
-        "google_sample": google_contacts[:5],
-        "amo_sample": amo_contacts[:5],
-        "counts": {"google": len(google_contacts), "amo": len(amo_contacts)},
+        "summary": {
+            "amo": compare["amo"],
+            "google": compare["google"],
+            "match": compare["match"],
+            "actions": actions,
+        },
+        "samples": samples,
     }
 
 
