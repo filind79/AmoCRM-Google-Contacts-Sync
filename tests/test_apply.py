@@ -11,7 +11,7 @@ def create(monkeypatch, secret: str | None = None):
     return create_app()
 
 
-def test_apply_creates_missing(monkeypatch):
+def test_apply_upserts(monkeypatch):
     from app import sync as sync_module
 
     async def fake_fetch_amo(limit, since_days):  # noqa: ARG001
@@ -21,31 +21,28 @@ def test_apply_creates_missing(monkeypatch):
             {"id": 3, "name": "c", "emails": ["c@example.com"], "phones": []},
         ]
 
-    async def fake_fetch_google(limit, since_days):  # noqa: ARG001
-        return [{"resourceName": "r1", "name": "g", "emails": ["a@example.com"], "phones": []}]
+    upserts: list[tuple[int, str]] = []
 
-    created: list[str] = []
-
-    async def fake_create_contact(data):
-        resource = f"people/{data['id']}"
-        created.append(resource)
-        return {"resourceName": resource}
+    async def fake_upsert(amo_id, data):  # noqa: ARG001
+        action = "update" if amo_id == 1 else "create"
+        upserts.append((amo_id, action))
+        return {"resourceName": f"people/{amo_id}", "action": action}
 
     monkeypatch.setattr(sync_module, "fetch_amo_contacts", fake_fetch_amo)
-    monkeypatch.setattr(sync_module, "fetch_google_contacts", fake_fetch_google)
-    monkeypatch.setattr(sync_module.google_people, "create_contact", fake_create_contact)
+    monkeypatch.setattr(sync_module.google_people, "upsert_contact_by_external_id", fake_upsert)
 
     app = create(monkeypatch, "s")
     with TestClient(app) as client:
         resp = client.post(
-            "/sync/contacts/apply?limit=2&direction=to_google&confirm=1",
+            "/sync/contacts/apply?limit=3&direction=to_google&confirm=1",
             headers={"X-Debug-Secret": "s"},
         )
         assert resp.status_code == 200
         data = resp.json()
         assert data["created"] == 2
-        assert data["skipped_existing"] == 1
-        assert len(created) == 2
+        assert data["updated"] == 1
+        assert data["processed"] == 3
+        assert len(upserts) == 3
 
 
 def test_apply_requires_secret_and_confirm(monkeypatch):

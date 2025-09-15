@@ -117,16 +117,18 @@ async def upsert_contact_by_external_id(amo_contact_id: int, data: Dict[str, Any
             if emails:
                 body["emailAddresses"] = [{"value": e} for e in emails if e]
 
+            action = "update" if resource_name else "create"
             if resource_name:
                 update_url = f"{GOOGLE_API_BASE}/{resource_name}:updateContact"
                 update_params = {"updatePersonFields": "names,phoneNumbers,emailAddresses"}
                 resp = await client.patch(update_url, params=update_params, headers=headers, json=body)
-                resp.raise_for_status()
-                return resp.json()
-            create_url = f"{GOOGLE_API_BASE}/people:createContact"
-            resp = await client.post(create_url, headers=headers, json=body)
+            else:
+                create_url = f"{GOOGLE_API_BASE}/people:createContact"
+                resp = await client.post(create_url, headers=headers, json=body)
             resp.raise_for_status()
-            return resp.json()
+            result = resp.json()
+            result["action"] = action
+            return result
     finally:
         session.close()
 
