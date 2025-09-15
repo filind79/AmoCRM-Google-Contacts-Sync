@@ -44,3 +44,53 @@ def test_debug_ping_env(monkeypatch):
     client = TestClient(main.app)
     resp = client.get("/debug/ping", headers={"X-Debug-Secret": "env"})
     assert resp.status_code == 200
+
+
+def test_debug_db(monkeypatch):
+    app = _app_with_secret(monkeypatch, "s")
+    with TestClient(app) as client:
+        resp = client.get("/debug/db", headers={"X-Debug-Secret": "s"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["dialect"] == "sqlite"
+        assert data["ok"] is True
+
+
+def test_debug_google_no_token(monkeypatch):
+    app = _app_with_secret(monkeypatch, "s")
+    with TestClient(app) as client:
+        resp = client.get("/debug/google", headers={"X-Debug-Secret": "s"})
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "has_token": False,
+            "expires_at": None,
+            "will_refresh": False,
+        }
+
+
+def test_debug_google_with_token(monkeypatch):
+    app = _app_with_secret(monkeypatch, "s")
+    from datetime import datetime, timedelta
+    from app.storage import get_session, save_token
+
+    session = get_session()
+    expiry = datetime.utcnow().replace(microsecond=0) - timedelta(minutes=1)
+    save_token(session, "google", access_token="a", refresh_token="r", expiry=expiry, scopes="")
+    session.close()
+
+    with TestClient(app) as client:
+        resp = client.get("/debug/google", headers={"X-Debug-Secret": "s"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["has_token"] is True
+        assert data["will_refresh"] is True
+        assert data["expires_at"].startswith(expiry.isoformat())
+
+
+def test_debug_amo(monkeypatch):
+    app = _app_with_secret(monkeypatch, "s")
+    from app.config import settings
+    with TestClient(app) as client:
+        resp = client.get("/debug/amo", headers={"X-Debug-Secret": "s"})
+        assert resp.status_code == 200
+        assert resp.json() == {"has_token": False, "base_url": settings.amo_base_url}
