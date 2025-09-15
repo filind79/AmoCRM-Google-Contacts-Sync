@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from fastapi.testclient import TestClient
 
 
@@ -120,4 +122,40 @@ def test_dry_run_direction_google(monkeypatch):
         assert len(data["samples"]["google_only"]) == 1
         assert "amo_only" not in data["samples"]
         assert data["debug"]["counters"]["requests"] == 1
+
+
+def test_dry_run_since_days(monkeypatch):
+    from app.routes import sync as sync_route
+    from app import google_people
+    from app.google_people import Contact
+
+    async def fake_list_contacts(limit, since_days=None, counters=None):  # noqa: ARG001
+        return [
+            Contact(
+                resource_id="r1",
+                name="g",
+                email="g@ex.com",
+                phone=None,
+                update_time=datetime.now(timezone.utc),
+            )
+        ]
+
+    async def fake_search_contacts(query, counters=None):  # noqa: ARG001
+        return []
+
+    async def fake_fetch_amo(limit, since_days=None):  # noqa: ARG001
+        return []
+
+    monkeypatch.setattr(google_people, "list_contacts", fake_list_contacts)
+    monkeypatch.setattr(google_people, "search_contacts", fake_search_contacts)
+    monkeypatch.setattr(sync_route, "fetch_amo_contacts", fake_fetch_amo)
+
+    app = create(monkeypatch)
+    with TestClient(app) as client:
+        resp = client.get(
+            "/sync/contacts/dry-run?direction=both&limit=5&since_days=30"
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["summary"] is not None
 

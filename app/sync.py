@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import httpx
 from fastapi import HTTPException
@@ -24,8 +24,8 @@ async def fetch_amo_contacts(limit: int, since_days: Optional[int] = None) -> Li
     headers = {"Authorization": f"Bearer {token}"}
     params = {"limit": limit}
     if since_days is not None:
-        since = datetime.utcnow() - timedelta(days=since_days)
-        params["filter[updated_at][from]"] = since.isoformat() + "Z"
+        since = datetime.now(timezone.utc) - timedelta(days=since_days)
+        params["filter[updated_at][from]"] = since.isoformat().replace("+00:00", "Z")
     async with httpx.AsyncClient(timeout=20) as client:
         resp = await client.get(url, headers=headers, params=params)
     if resp.status_code != 200:
@@ -53,6 +53,11 @@ async def fetch_google_contacts(
 ) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
     counters: Dict[str, int] = {"requests": 0, "considered": 0, "found": 0}
     contacts_map: Dict[str, Dict[str, Any]] = {}
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(days=since_days)
+        if since_days is not None
+        else None
+    )
 
     if list_existing:
         listed = await google_people.list_contacts(limit, since_days, counters)
@@ -77,8 +82,10 @@ async def fetch_google_contacts(
                 seen.add(key)
                 found = await google_people.search_contacts(key, counters)
                 for c in found:
-                    if since_days is not None and c.update_time is not None:
-                        if c.update_time < datetime.utcnow() - timedelta(days=since_days):
+                    if cutoff is not None and c.update_time is not None:
+                        if c.update_time.tzinfo is None:
+                            continue
+                        if c.update_time < cutoff:
                             continue
                     if c.resource_id not in contacts_map:
                         emails = [c.email] if c.email else []

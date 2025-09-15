@@ -8,7 +8,7 @@ an up to date access token is used.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -39,16 +39,22 @@ async def _token_headers(session) -> Dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+
+def _parse_rfc3339(ts: str) -> datetime:
+    return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+
+
 def _parse_update_time(person: Dict[str, Any]) -> Optional[datetime]:
     sources = person.get("metadata", {}).get("sources", [])
+    times = []
     for src in sources:
         ts = src.get("updateTime")
         if ts:
             try:
-                return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                times.append(_parse_rfc3339(ts))
             except ValueError:
                 continue
-    return None
+    return max(times) if times else None
 
 
 async def list_contacts(
@@ -64,6 +70,11 @@ async def list_contacts(
         url = f"{GOOGLE_API_BASE}/people/me/connections"
         collected: List[Contact] = []
         page_token: Optional[str] = None
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(days=since_days)
+            if since_days is not None
+            else None
+        )
         while len(collected) < limit:
             params: Dict[str, Any] = {
                 "personFields": "names,emailAddresses,phoneNumbers,metadata",
@@ -88,8 +99,10 @@ async def list_contacts(
                 counters["considered"] = counters.get("considered", 0) + len(persons)
             for person in persons:
                 upd = _parse_update_time(person)
-                if since_days is not None and upd is not None:
-                    if upd < datetime.utcnow() - timedelta(days=since_days):
+                if cutoff is not None and upd is not None:
+                    if upd.tzinfo is None:
+                        continue
+                    if upd < cutoff:
                         continue
                 names = person.get("names", [])
                 name = names[0].get("displayName") if names else ""
