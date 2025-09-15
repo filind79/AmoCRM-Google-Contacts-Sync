@@ -11,6 +11,12 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
+import asyncio
+import os
+import random
+import time
+from collections import deque
+
 import httpx
 
 from app.google_auth import (
@@ -23,6 +29,72 @@ from app.utils import normalize_email, normalize_phone, unique
 
 
 GOOGLE_API_BASE = "https://people.googleapis.com/v1"
+
+GOOGLE_RPM = int(os.getenv("GOOGLE_RPM", "20"))
+
+
+class GoogleRateLimitError(Exception):
+    """Raised when Google People API quota is exceeded."""
+
+    def __init__(self, retry_after: int, payload: Optional[Dict[str, Any]] | None = None) -> None:
+        self.retry_after = retry_after
+        self.payload = payload or {}
+
+
+class _RateLimiter:
+    def __init__(self, rpm: int) -> None:
+        self.rpm = rpm
+        self._calls: deque[float] = deque()
+
+    async def acquire(self) -> None:
+        while True:
+            now = time.monotonic()
+            while self._calls and now - self._calls[0] >= 60:
+                self._calls.popleft()
+            if len(self._calls) < self.rpm:
+                self._calls.append(now)
+                return
+            await asyncio.sleep(60 - (now - self._calls[0]))
+
+
+_rate_limiter = _RateLimiter(GOOGLE_RPM)
+
+
+def _is_resource_exhausted(resp: httpx.Response) -> bool:
+    try:
+        return resp.json().get("error", {}).get("status") == "RESOURCE_EXHAUSTED"
+    except Exception:
+        return False
+
+
+async def _request(method: str, url: str, **kwargs) -> httpx.Response:
+    max_sleep = 30
+    attempt = 0
+    async with httpx.AsyncClient(timeout=10) as client:
+        while True:
+            await _rate_limiter.acquire()
+            resp = await client.request(method, url, **kwargs)
+            try:
+                resp.raise_for_status()
+                return resp
+            except httpx.HTTPStatusError as e:
+                code = e.response.status_code
+                if code == 429 or (code == 403 and _is_resource_exhausted(e.response)):
+                    retry_after_header = e.response.headers.get("retry-after")
+                    if retry_after_header is not None:
+                        try:
+                            wait = float(retry_after_header)
+                        except ValueError:
+                            wait = 0
+                    else:
+                        wait = 2**attempt
+                    wait = min(wait, max_sleep) + random.uniform(0, 1)
+                    if attempt >= 4:
+                        raise GoogleRateLimitError(int(wait)) from e
+                    await asyncio.sleep(wait)
+                    attempt += 1
+                    continue
+                raise
 
 
 @dataclass
@@ -83,17 +155,20 @@ async def list_contacts(
             }
             if page_token:
                 params["pageToken"] = page_token
-            async with httpx.AsyncClient(timeout=10) as client:
-                resp = await client.get(url, params=params, headers=headers)
-                if resp.status_code == 401:
+            try:
+                resp = await _request("GET", url, params=params, headers=headers)
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 401:
                     new_token = await force_refresh_google_access_token(session)
                     headers["Authorization"] = f"Bearer {new_token}"
-                    resp = await client.get(url, params=params, headers=headers)
-                    if resp.status_code == 401:
+                    try:
+                        resp = await _request("GET", url, params=params, headers=headers)
+                    except httpx.HTTPStatusError:
                         raise GoogleAuthError("unauthorised", "/auth/google/start")
+                else:
+                    raise
             if counters is not None:
                 counters["requests"] = counters.get("requests", 0) + 1
-            resp.raise_for_status()
             data = resp.json()
             persons = data.get("connections", [])
             if counters is not None:
@@ -140,11 +215,9 @@ async def search_contacts(
             "readMask": "names,emailAddresses,phoneNumbers,metadata",
         }
         url = f"{GOOGLE_API_BASE}/people:searchContacts"
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.get(url, params=params, headers=headers)
+        resp = await _request("GET", url, params=params, headers=headers)
         if counters is not None:
             counters["requests"] = counters.get("requests", 0) + 1
-        resp.raise_for_status()
         data = resp.json().get("results", [])
     finally:
         session.close()
@@ -192,36 +265,35 @@ async def upsert_contact_by_external_id(amo_contact_id: int, data: Dict[str, Any
         external_id = {"value": str(amo_contact_id), "type": "AMOCRM"}
         url = f"{GOOGLE_API_BASE}/people:searchContacts"
         params = {"query": str(amo_contact_id), "readMask": "names,phoneNumbers,emailAddresses"}
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.get(url, params=params, headers=headers)
-            resp.raise_for_status()
-            results = resp.json().get("results", [])
-            resource_name = None
-            if results:
-                resource_name = results[0]["person"]["resourceName"]
+        resp = await _request("GET", url, params=params, headers=headers)
+        results = resp.json().get("results", [])
+        resource_name = None
+        if results:
+            resource_name = results[0]["person"]["resourceName"]
 
-            body = {"names": [{"displayName": data["name"]}], "externalIds": [external_id]}
-            phones = [normalize_phone(p) for p in data.get("phones", [])]
-            phones = unique(phones)
-            if phones:
-                body["phoneNumbers"] = [{"value": p} for p in phones]
-            emails = [normalize_email(e) for e in data.get("emails", [])]
-            emails = unique(emails)
-            if emails:
-                body["emailAddresses"] = [{"value": e} for e in emails if e]
+        body = {"names": [{"displayName": data["name"]}], "externalIds": [external_id]}
+        phones = [normalize_phone(p) for p in data.get("phones", [])]
+        phones = unique(phones)
+        if phones:
+            body["phoneNumbers"] = [{"value": p} for p in phones]
+        emails = [normalize_email(e) for e in data.get("emails", [])]
+        emails = unique(emails)
+        if emails:
+            body["emailAddresses"] = [{"value": e} for e in emails if e]
 
-            action = "update" if resource_name else "create"
-            if resource_name:
-                update_url = f"{GOOGLE_API_BASE}/{resource_name}:updateContact"
-                update_params = {"updatePersonFields": "names,phoneNumbers,emailAddresses"}
-                resp = await client.patch(update_url, params=update_params, headers=headers, json=body)
-            else:
-                create_url = f"{GOOGLE_API_BASE}/people:createContact"
-                resp = await client.post(create_url, headers=headers, json=body)
-            resp.raise_for_status()
-            result = resp.json()
-            result["action"] = action
-            return result
+        action = "update" if resource_name else "create"
+        if resource_name:
+            update_url = f"{GOOGLE_API_BASE}/{resource_name}:updateContact"
+            update_params = {"updatePersonFields": "names,phoneNumbers,emailAddresses"}
+            resp = await _request(
+                "PATCH", update_url, params=update_params, headers=headers, json=body
+            )
+        else:
+            create_url = f"{GOOGLE_API_BASE}/people:createContact"
+            resp = await _request("POST", create_url, headers=headers, json=body)
+        result = resp.json()
+        result["action"] = action
+        return result
     finally:
         session.close()
 
@@ -233,7 +305,7 @@ async def create_contact(data: Dict[str, Any]) -> Dict[str, Any]:
     try:
         headers = await _token_headers(session)
         headers["Content-Type"] = "application/json"
-        body: Dict[str, Any] = {"names": [{"displayName": data.get("name", "")}]}
+        body: Dict[str, Any] = {"names": [{"displayName": data.get("name", "")}]} 
         phones = unique([normalize_phone(p) for p in data.get("phones", []) if p])
         if phones:
             body["phoneNumbers"] = [{"value": p} for p in phones]
@@ -241,10 +313,8 @@ async def create_contact(data: Dict[str, Any]) -> Dict[str, Any]:
         if emails:
             body["emailAddresses"] = [{"value": e} for e in emails]
         url = f"{GOOGLE_API_BASE}/people:createContact"
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.post(url, headers=headers, json=body)
-            resp.raise_for_status()
-            return resp.json()
+        resp = await _request("POST", url, headers=headers, json=body)
+        return resp.json()
     finally:
         session.close()
 
@@ -260,29 +330,27 @@ async def search_contact(query: str) -> Optional[Dict[str, Any]]:
             "readMask": "names,emailAddresses,phoneNumbers,metadata",
         }
         url = f"{GOOGLE_API_BASE}/people:searchContacts"
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.get(url, params=params, headers=headers)
-            resp.raise_for_status()
-            results = resp.json().get("results", [])
-            if not results:
-                return None
-            person = results[0].get("person", {})
-            names = person.get("names", [])
-            return {
-                "resourceName": person.get("resourceName", ""),
-                "etag": person.get("etag"),
-                "names": names,
-                "emails": [
-                    e.get("value")
-                    for e in person.get("emailAddresses", [])
-                    if e.get("value")
-                ],
-                "phones": [
-                    p.get("value")
-                    for p in person.get("phoneNumbers", [])
-                    if p.get("value")
-                ],
-            }
+        resp = await _request("GET", url, params=params, headers=headers)
+        results = resp.json().get("results", [])
+        if not results:
+            return None
+        person = results[0].get("person", {})
+        names = person.get("names", [])
+        return {
+            "resourceName": person.get("resourceName", ""),
+            "etag": person.get("etag"),
+            "names": names,
+            "emails": [
+                e.get("value")
+                for e in person.get("emailAddresses", [])
+                if e.get("value")
+            ],
+            "phones": [
+                p.get("value")
+                for p in person.get("phoneNumbers", [])
+                if p.get("value")
+            ],
+        }
     finally:
         session.close()
 
@@ -316,10 +384,8 @@ async def update_contact(resource_name: str, etag: str, data: Dict[str, Any]) ->
             return {}
         params = {"updatePersonFields": ",".join(update_fields)}
         url = f"{GOOGLE_API_BASE}/{resource_name}:updateContact"
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.patch(url, params=params, headers=headers, json=body)
-            resp.raise_for_status()
-            return resp.json()
+        resp = await _request("PATCH", url, params=params, headers=headers, json=body)
+        return resp.json()
     finally:
         session.close()
 
