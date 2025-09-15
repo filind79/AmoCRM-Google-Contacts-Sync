@@ -5,7 +5,7 @@ from loguru import logger
 
 from app.config import settings
 from app.google_auth import GoogleAuthError
-from app.google_people import GoogleRateLimitError
+from app.google_people import RateLimitError
 from app.sync import (
     apply_contacts_to_google,
     dry_run_compare,
@@ -98,25 +98,13 @@ async def contacts_apply(
         raise HTTPException(status_code=400, detail="Invalid direction")
     try:
         return await apply_contacts_to_google(limit, since_days)
-    except GoogleRateLimitError as e:
-        from fastapi.responses import JSONResponse
-
-        content = e.payload
-        content.setdefault("status", "rate_limited")
-        content["rate_limit"] = {
-            "retry_after_seconds": e.retry_after,
-            "reason": "google_quota",
-        }
-        headers = {"Retry-After": str(e.retry_after)}
-        return JSONResponse(status_code=429, content=content, headers=headers)
-    except GoogleAuthError:
-        logger.exception("sync.apply.failed")
-        from fastapi.responses import JSONResponse
-
-        return JSONResponse(
-            status_code=401,
-            content={"detail": "Google auth required", "auth_url": "/auth/google/start"},
-        )
+    except RateLimitError as e:
+        raise HTTPException(
+            status_code=429,
+            detail="Rate limited: please retry later",
+        ) from e
+    except GoogleAuthError as e:
+        raise HTTPException(status_code=401, detail="Google auth required") from e
     except Exception as e:
         logger.exception("sync.apply.failed")
         raise HTTPException(status_code=502, detail=f"Apply failed: {e}")

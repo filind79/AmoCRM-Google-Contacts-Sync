@@ -1,7 +1,7 @@
 from fastapi.testclient import TestClient
 from app import amocrm
 from app.google_auth import GoogleAuthError
-from app.google_people import GoogleRateLimitError
+from app.google_people import RateLimitError
 
 
 def create(monkeypatch, secret: str | None = None):
@@ -137,7 +137,7 @@ def test_apply_rate_limited(monkeypatch):
     async def fake_upsert(amo_id, data):  # noqa: ARG001
         if amo_id == 1:
             return {"resourceName": "people/1", "action": "create"}
-        raise GoogleRateLimitError(12)
+        raise RateLimitError(12)
 
     monkeypatch.setattr(sync_module, "fetch_amo_contacts", fake_fetch_amo)
     monkeypatch.setattr(sync_module.google_people, "search_contact", fake_search)
@@ -152,14 +152,7 @@ def test_apply_rate_limited(monkeypatch):
             headers={"X-Debug-Secret": "s"},
         )
         assert resp.status_code == 429
-        assert resp.headers.get("Retry-After") == "12"
-        data = resp.json()
-        assert data["status"] == "rate_limited"
-        assert data["processed"] == 1
-        assert data["created"] == 1
-        assert data["updated"] == 0
-        assert data["rate_limit"]["retry_after_seconds"] == 12
-        assert data["rate_limit"]["reason"] == "google_quota"
+        assert resp.json() == {"detail": "Rate limited: please retry later"}
 
 
 def test_apply_forbidden_without_secret_or_confirm(monkeypatch):
@@ -201,10 +194,7 @@ def test_apply_google_auth_error_to_401(monkeypatch):
             headers={"X-Debug-Secret": "s"},
         )
         assert resp.status_code == 401
-        assert resp.json() == {
-            "detail": "Google auth required",
-            "auth_url": "/auth/google/start",
-        }
+        assert resp.json() == {"detail": "Google auth required"}
 
 
 def test_apply_generic_error_to_502(monkeypatch):
