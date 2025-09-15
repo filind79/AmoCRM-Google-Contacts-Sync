@@ -12,10 +12,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 import asyncio
+from collections import deque
 import os
 import random
 import time
-from collections import deque
 
 import httpx
 
