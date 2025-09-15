@@ -34,8 +34,11 @@ async def contacts_dry_run(
     except Exception as e:  # pragma: no cover - unexpected
         raise HTTPException(status_code=502, detail=f"AmoCRM API error: {e}")
     try:
-        google_contacts = (
-            await fetch_google_contacts(limit, since_days) if direction in {"both", "google"} else []
+        google_contacts, counters = await fetch_google_contacts(
+            limit,
+            since_days,
+            amo_contacts if direction in {"both", "amo"} else None,
+            list_existing=direction in {"both", "google"},
         )
     except GoogleAuthError:
         from fastapi.responses import JSONResponse
@@ -76,6 +79,7 @@ async def contacts_dry_run(
             "actions": actions,
         },
         "samples": samples,
+        "debug": {"counters": counters},
     }
 
 

@@ -44,8 +44,11 @@ def test_dry_run_no_token(monkeypatch):
 def test_dry_run_ok(monkeypatch):
     from app.routes import sync as sync_route
 
-    async def fake_fetch_google(limit, since_days=None):  # noqa: ARG001
-        return [{"resourceName": "r1", "name": "g", "emails": ["g@ex.com"], "phones": []}]
+    async def fake_fetch_google(limit, since_days=None, amo_contacts=None, list_existing=True):  # noqa: ARG001
+        return (
+            [{"resourceName": "r1", "name": "g", "emails": ["g@ex.com"], "phones": []}],
+            {"requests": 1, "considered": 1, "found": 0},
+        )
 
     async def fake_fetch_amo(limit):  # noqa: ARG001
         return [{"id": 1, "name": "a", "emails": ["a@ex.com"], "phones": []}]
@@ -63,6 +66,7 @@ def test_dry_run_ok(monkeypatch):
         assert data["summary"]["actions"]["google_to_amo"]["create"] == 1
         assert len(data["samples"]["amo_only"]) == 1
         assert len(data["samples"]["google_only"]) == 1
+        assert data["debug"]["counters"]["requests"] == 1
 
 
 def test_dry_run_direction_amo(monkeypatch):
@@ -71,8 +75,8 @@ def test_dry_run_direction_amo(monkeypatch):
     async def fake_fetch_amo(limit):  # noqa: ARG001
         return [{"id": 1, "name": "a", "emails": ["a@ex.com"], "phones": []}]
 
-    async def fake_fetch_google(limit, since_days=None):  # noqa: ARG001
-        return []
+    async def fake_fetch_google(limit, since_days=None, amo_contacts=None, list_existing=True):  # noqa: ARG001
+        return ([], {"requests": 0, "considered": 0, "found": 0})
 
     monkeypatch.setattr(sync_route, "fetch_amo_contacts", fake_fetch_amo)
     monkeypatch.setattr(sync_route, "fetch_google_contacts", fake_fetch_google)
@@ -87,13 +91,17 @@ def test_dry_run_direction_amo(monkeypatch):
         assert data["summary"]["actions"] == {"amo_to_google": {"create": 1, "update": 0}}
         assert len(data["samples"]["amo_only"]) == 1
         assert "google_only" not in data["samples"]
+        assert data["debug"]["counters"]["requests"] == 0
 
 
 def test_dry_run_direction_google(monkeypatch):
     from app.routes import sync as sync_route
 
-    async def fake_fetch_google(limit, since_days=None):  # noqa: ARG001
-        return [{"resourceName": "r1", "name": "g", "emails": ["g@ex.com"], "phones": []}]
+    async def fake_fetch_google(limit, since_days=None, amo_contacts=None, list_existing=True):  # noqa: ARG001
+        return (
+            [{"resourceName": "r1", "name": "g", "emails": ["g@ex.com"], "phones": []}],
+            {"requests": 1, "considered": 1, "found": 0},
+        )
 
     async def fake_fetch_amo(limit):  # noqa: ARG001
         return []
@@ -111,4 +119,5 @@ def test_dry_run_direction_google(monkeypatch):
         assert data["summary"]["actions"] == {"google_to_amo": {"create": 1, "update": 0}}
         assert len(data["samples"]["google_only"]) == 1
         assert "amo_only" not in data["samples"]
+        assert data["debug"]["counters"]["requests"] == 1
 

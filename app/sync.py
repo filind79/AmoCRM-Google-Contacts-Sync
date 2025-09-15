@@ -45,14 +45,53 @@ async def fetch_amo_contacts(limit: int, since_days: Optional[int] = None) -> Li
     return items
 
 
-async def fetch_google_contacts(limit: int, since_days: Optional[int] = None) -> List[Dict[str, Any]]:
-    contacts = await google_people.list_contacts(limit, since_days)
-    items: List[Dict[str, Any]] = []
-    for c in contacts:
-        emails = [c.email] if c.email else []
-        phones = [c.phone] if c.phone else []
-        items.append({"resourceName": c.resource_id, "name": c.name, "emails": emails, "phones": phones})
-    return items
+async def fetch_google_contacts(
+    limit: int,
+    since_days: Optional[int] = None,
+    amo_contacts: Optional[List[Dict[str, Any]]] = None,
+    list_existing: bool = True,
+) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
+    counters: Dict[str, int] = {"requests": 0, "considered": 0, "found": 0}
+    contacts_map: Dict[str, Dict[str, Any]] = {}
+
+    if list_existing:
+        listed = await google_people.list_contacts(limit, since_days, counters)
+        for c in listed:
+            emails = [c.email] if c.email else []
+            phones = [c.phone] if c.phone else []
+            contacts_map[c.resource_id] = {
+                "resourceName": c.resource_id,
+                "name": c.name,
+                "emails": emails,
+                "phones": phones,
+            }
+
+    if amo_contacts:
+        seen: set[str] = set()
+        for amo_c in amo_contacts:
+            keys = [normalize_email(e) for e in amo_c.get("emails", []) if e]
+            keys += [normalize_phone(p) for p in amo_c.get("phones", []) if p]
+            for key in set(keys):
+                if key in seen:
+                    continue
+                seen.add(key)
+                found = await google_people.search_contacts(key, counters)
+                for c in found:
+                    if since_days is not None and c.update_time is not None:
+                        if c.update_time < datetime.utcnow() - timedelta(days=since_days):
+                            continue
+                    if c.resource_id not in contacts_map:
+                        emails = [c.email] if c.email else []
+                        phones = [c.phone] if c.phone else []
+                        contacts_map[c.resource_id] = {
+                            "resourceName": c.resource_id,
+                            "name": c.name,
+                            "emails": emails,
+                            "phones": phones,
+                        }
+                        counters["found"] += 1
+
+    return list(contacts_map.values()), counters
 
 
 def _prepare_contacts(contacts: List[Dict[str, Any]], id_key: str) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
