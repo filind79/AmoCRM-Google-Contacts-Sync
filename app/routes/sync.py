@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Header, HTTPException, Query
 
+from app.config import settings
 from app.google_auth import GoogleAuthError
-from app.sync import fetch_amo_contacts, fetch_google_contacts
+from app.sync import apply_contacts_to_google, fetch_amo_contacts, fetch_google_contacts
 
 router = APIRouter(prefix="/sync", tags=["sync"])
 
@@ -49,3 +50,18 @@ async def contacts_dry_run(
         "amo_sample": amo_contacts[:5],
         "counts": {"google": len(google_contacts), "amo": len(amo_contacts)},
     }
+
+
+@router.post("/contacts/apply")
+async def contacts_apply(
+    limit: int = Query(5, ge=1, le=50),
+    since_days: int = Query(30, ge=1),
+    direction: str = Query("to_google"),
+    confirm: int | None = Query(None),
+    x_debug_secret: str | None = Header(None, alias="X-Debug-Secret"),
+) -> dict[str, object]:
+    if x_debug_secret != settings.debug_secret or confirm != 1:
+        raise HTTPException(status_code=403)
+    if direction != "to_google":
+        raise HTTPException(status_code=400, detail="Invalid direction")
+    return await apply_contacts_to_google(limit, since_days)

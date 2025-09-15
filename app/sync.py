@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
 
+import logging
+from datetime import datetime, timedelta
+
 import httpx
 from fastapi import HTTPException
 
@@ -9,8 +12,10 @@ from app import amocrm, google_people
 from app.config import settings
 from app.utils import normalize_email, normalize_phone, unique
 
+logger = logging.getLogger(__name__)
 
-async def fetch_amo_contacts(limit: int) -> List[Dict[str, Any]]:
+
+async def fetch_amo_contacts(limit: int, since_days: Optional[int] = None) -> List[Dict[str, Any]]:
     token = settings.amo_long_lived_token
     base_url = settings.amo_base_url.rstrip("/")
     if not token or not base_url:
@@ -18,6 +23,9 @@ async def fetch_amo_contacts(limit: int) -> List[Dict[str, Any]]:
     url = f"{base_url}/api/v4/contacts"
     headers = {"Authorization": f"Bearer {token}"}
     params = {"limit": limit}
+    if since_days is not None:
+        since = datetime.utcnow() - timedelta(days=since_days)
+        params["filter[updated_at][from]"] = since.isoformat() + "Z"
     async with httpx.AsyncClient(timeout=20) as client:
         resp = await client.get(url, headers=headers, params=params)
     if resp.status_code != 200:
@@ -172,3 +180,81 @@ def dry_run_compare(
         },
     }
     return result
+
+
+def build_google_lookup(contacts: List[Dict[str, Any]]) -> Dict[str, set[str]]:
+    emails: set[str] = set()
+    phones: set[str] = set()
+    for c in contacts:
+        emails.update(normalize_email(e) for e in c.get("emails", []) if e)
+        phones.update(normalize_phone(p) for p in c.get("phones", []) if p)
+    return {"emails": emails, "phones": phones}
+
+
+def is_existing_in_google(amo_contact: Dict[str, Any], lookup: Dict[str, set[str]]) -> bool:
+    for e in amo_contact.get("emails", []):
+        if normalize_email(e) in lookup["emails"]:
+            return True
+    for p in amo_contact.get("phones", []):
+        if normalize_phone(p) in lookup["phones"]:
+            return True
+    return False
+
+
+async def apply_contacts_to_google(limit: int, since_days: int) -> Dict[str, Any]:
+    fetch_limit = limit * 3
+    amo_contacts = await fetch_amo_contacts(fetch_limit, since_days)
+    google_contacts = await fetch_google_contacts(500, None)
+    lookup = build_google_lookup(google_contacts)
+
+    created_samples: List[Dict[str, Any]] = []
+    errors: List[Dict[str, Any]] = []
+    created = 0
+    skipped_existing = 0
+    processed = 0
+
+    for contact in amo_contacts:
+        if created >= limit:
+            break
+        processed += 1
+        if is_existing_in_google(contact, lookup):
+            skipped_existing += 1
+            continue
+        try:
+            resp = await google_people.create_contact(contact)
+            resource = resp.get("resourceName", "")
+            logger.info(
+                "Created Google contact",
+                extra={"amo_id": contact.get("id"), "google_resource_name": resource},
+            )
+            created += 1
+            if len(created_samples) < 5:
+                created_samples.append(
+                    {
+                        "amo_id": contact.get("id"),
+                        "google_resource_name": resource,
+                        "name": contact.get("name"),
+                        "phones": contact.get("phones", []),
+                        "emails": contact.get("emails", []),
+                    }
+                )
+            lookup["emails"].update(normalize_email(e) for e in contact.get("emails", []) if e)
+            lookup["phones"].update(normalize_phone(p) for p in contact.get("phones", []) if p)
+        except Exception as e:  # pragma: no cover - network errors
+            errors.append(
+                {
+                    "amo_id": contact.get("id"),
+                    "reason": "google_api_error",
+                    "message": str(e),
+                }
+            )
+
+    return {
+        "direction": "to_google",
+        "limit": limit,
+        "processed": processed,
+        "created": created,
+        "skipped_existing": skipped_existing,
+        "created_samples": created_samples,
+        "errors": errors,
+    }

@@ -130,3 +130,26 @@ async def upsert_contact_by_external_id(amo_contact_id: int, data: Dict[str, Any
     finally:
         session.close()
 
+
+async def create_contact(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Create a new contact in Google People."""
+
+    session = get_session()
+    try:
+        headers = await _token_headers(session)
+        headers["Content-Type"] = "application/json"
+        body: Dict[str, Any] = {"names": [{"displayName": data.get("name", "")}]}
+        phones = unique([normalize_phone(p) for p in data.get("phones", []) if p])
+        if phones:
+            body["phoneNumbers"] = [{"value": p} for p in phones]
+        emails = unique([normalize_email(e) for e in data.get("emails", []) if e])
+        if emails:
+            body["emailAddresses"] = [{"value": e} for e in emails]
+        url = f"{GOOGLE_API_BASE}/people:createContact"
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(url, headers=headers, json=body)
+            resp.raise_for_status()
+            return resp.json()
+    finally:
+        session.close()
+
