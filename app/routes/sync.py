@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Header, HTTPException, Query
+from loguru import logger
 
 from app.config import settings
 from app.google_auth import GoogleAuthError
@@ -90,4 +91,16 @@ async def contacts_apply(
         raise HTTPException(status_code=403)
     if direction != "to_google":
         raise HTTPException(status_code=400, detail="Invalid direction")
-    return await apply_contacts_to_google(limit, since_days)
+    try:
+        return await apply_contacts_to_google(limit, since_days)
+    except GoogleAuthError:
+        logger.exception("sync.apply.failed")
+        from fastapi.responses import JSONResponse
+
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Google auth required", "auth_url": "/auth/google/start"},
+        )
+    except Exception as e:
+        logger.exception("sync.apply.failed")
+        raise HTTPException(status_code=502, detail=f"Apply failed: {e}")
