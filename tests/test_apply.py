@@ -1,4 +1,5 @@
 from fastapi.testclient import TestClient
+from app.google_auth import GoogleAuthError
 
 
 def create(monkeypatch, secret: str | None = None):
@@ -29,7 +30,9 @@ def test_apply_upserts(monkeypatch):
         return {"resourceName": f"people/{amo_id}", "action": action}
 
     monkeypatch.setattr(sync_module, "fetch_amo_contacts", fake_fetch_amo)
-    monkeypatch.setattr(sync_module.google_people, "upsert_contact_by_external_id", fake_upsert)
+    monkeypatch.setattr(
+        sync_module.google_people, "upsert_contact_by_external_id", fake_upsert
+    )
 
     app = create(monkeypatch, "s")
     with TestClient(app) as client:
@@ -45,11 +48,11 @@ def test_apply_upserts(monkeypatch):
         assert len(upserts) == 3
 
 
-def test_apply_requires_secret_and_confirm(monkeypatch):
+def test_apply_forbidden_without_secret_or_confirm(monkeypatch):
     app = create(monkeypatch, "s")
     with TestClient(app) as client:
         resp = client.post(
-            "/sync/contacts/apply?limit=1&direction=to_google&confirm=1"
+            "/sync/contacts/apply?limit=1&direction=to_google&confirm=1",
         )
         assert resp.status_code == 403
         resp = client.post(
@@ -57,4 +60,71 @@ def test_apply_requires_secret_and_confirm(monkeypatch):
             headers={"X-Debug-Secret": "s"},
         )
         assert resp.status_code == 403
+
+
+def test_apply_invalid_direction(monkeypatch):
+    app = create(monkeypatch, "s")
+    with TestClient(app) as client:
+        resp = client.post(
+            "/sync/contacts/apply?limit=1&direction=both&confirm=1",
+            headers={"X-Debug-Secret": "s"},
+        )
+        assert resp.status_code == 400
+
+
+def test_apply_google_auth_error_to_401(monkeypatch):
+    from app.routes import sync as sync_routes
+
+    async def fake_apply(limit, since_days):  # noqa: ARG001
+        raise GoogleAuthError("no_token")
+
+    monkeypatch.setattr(sync_routes, "apply_contacts_to_google", fake_apply)
+
+    app = create(monkeypatch, "s")
+    with TestClient(app) as client:
+        resp = client.post(
+            "/sync/contacts/apply?direction=to_google&limit=5&confirm=1",
+            headers={"X-Debug-Secret": "s"},
+        )
+        assert resp.status_code == 401
+        assert resp.json() == {
+            "detail": "Google auth required",
+            "auth_url": "/auth/google/start",
+        }
+
+
+def test_apply_generic_error_to_502(monkeypatch):
+    from app.routes import sync as sync_routes
+
+    async def fake_apply(limit, since_days):  # noqa: ARG001
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(sync_routes, "apply_contacts_to_google", fake_apply)
+
+    app = create(monkeypatch, "s")
+    with TestClient(app) as client:
+        resp = client.post(
+            "/sync/contacts/apply?direction=to_google&limit=5&confirm=1",
+            headers={"X-Debug-Secret": "s"},
+        )
+        assert resp.status_code == 502
+        assert resp.json() == {"detail": "Apply failed: boom"}
+
+
+def test_apply_success_passthrough(monkeypatch):
+    from app.routes import sync as sync_routes
+
+    async def fake_apply(limit, since_days):  # noqa: ARG001
+        return {"status": "ok", "created": 3, "skipped": 2}
+
+    monkeypatch.setattr(sync_routes, "apply_contacts_to_google", fake_apply)
+
+    app = create(monkeypatch, "s")
+    with TestClient(app) as client:
+        resp = client.post(
+            "/sync/contacts/apply?direction=to_google&limit=5&confirm=1",
+            headers={"X-Debug-Secret": "s"},
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "ok", "created": 3, "skipped": 2}
 
