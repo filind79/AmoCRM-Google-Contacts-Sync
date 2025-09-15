@@ -3,12 +3,18 @@ from typing import List
 
 
 def normalize_phone(phone: str) -> str:
+    """Return a unified ``+<digits>`` phone representation.
+
+    ``normalize_phone`` strips all non-digit characters, converts a Russian
+    leading ``8`` to ``+7`` and handles European ``00`` prefixes.
+    """
+
     digits = re.sub(r"\D", "", phone)
-    if digits.startswith("8"):
+    if digits.startswith("00"):
+        digits = digits[2:]
+    if digits.startswith("8") and len(digits) == 11:
         digits = "7" + digits[1:]
-    if not digits.startswith("+"):
-        digits = "+" + digits
-    return digits
+    return "+" + digits
 
 
 def unique(sequence: List[str]) -> List[str]:

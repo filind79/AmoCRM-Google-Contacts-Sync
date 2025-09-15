@@ -37,3 +37,16 @@ def test_extract_handles_missing_and_empty_structures():
         assert result["phones"] == []
         assert result["emails"] == []
     assert extract_name_and_fields(contacts[0])["name"] == "Jane Doe"
+
+
+def test_extract_normalizes_values() -> None:
+    contact = {
+        "name": "John",
+        "custom_fields_values": [
+            {"field_code": "PHONE", "values": [{"value": "8 (999) 111-22-33"}]},
+            {"field_code": "EMAIL", "values": [{"value": " User@MAIL.com "}]},
+        ],
+    }
+    result = extract_name_and_fields(contact)
+    assert result["phones"] == ["+79991112233"]
+    assert result["emails"] == ["user@mail.com"]

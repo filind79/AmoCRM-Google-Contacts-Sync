@@ -4,6 +4,7 @@ import httpx
 
 from app.config import settings
 from app.storage import get_session, get_token
+from app.utils import normalize_email, normalize_phone
 
 
 AMO_HEADERS = {"Content-Type": "application/json"}
@@ -54,7 +55,7 @@ def extract_name_and_fields(contact: Dict[str, Any]) -> Dict[str, Any]:
                 continue
             value = v.get("value")
             if code == "PHONE" and value:
-                phones.append(value)
+                phones.append(normalize_phone(value))
             elif code == "EMAIL" and value:
-                emails.append(value)
+                emails.append(normalize_email(value))
     return {"name": name, "phones": phones, "emails": emails}
