@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.debug import require_debug_secret
-from app.sync import dry_run_compare, fetch_amo_contacts, fetch_google_contacts
+from app.sync import fetch_amo_contacts, fetch_google_contacts
 
 router = APIRouter(prefix="/sync", tags=["sync"])
 
@@ -34,5 +34,7 @@ async def contacts_dry_run(
         raise e
     except Exception as e:  # pragma: no cover - unexpected
         raise HTTPException(status_code=502, detail=f"Google API error: {e}")
-    summary = dry_run_compare(amo_contacts, google_contacts, direction)
-    return {"input": {"limit": limit, "direction": direction}, **summary}
+    return {
+        "google_read": {"count": len(google_contacts), "since": None},
+        "amo_read": {"count": len(amo_contacts), "since": None},
+    }
