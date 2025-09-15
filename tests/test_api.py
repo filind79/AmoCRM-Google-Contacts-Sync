@@ -45,10 +45,10 @@ def test_dry_run_ok(monkeypatch):
     from app.routes import sync as sync_route
 
     async def fake_fetch_google(limit, since_days=None):  # noqa: ARG001
-        return [{"resourceName": "r1", "name": "g", "emails": [], "phones": []}]
+        return [{"resourceName": "r1", "name": "g", "emails": ["g@example.com"], "phones": []}]
 
     async def fake_fetch_amo(limit):  # noqa: ARG001
-        return [{"id": 1, "name": "a", "emails": [], "phones": []}]
+        return [{"id": 1, "name": "a", "emails": ["a@example.com"], "phones": []}]
 
     monkeypatch.setattr(sync_route, "fetch_google_contacts", fake_fetch_google)
     monkeypatch.setattr(sync_route, "fetch_amo_contacts", fake_fetch_amo)
@@ -60,4 +60,10 @@ def test_dry_run_ok(monkeypatch):
         data = resp.json()
         assert data["status"] == "ok"
         assert data["counts"] == {"google": 1, "amo": 1}
+        assert data["summary"] == {
+            "to_google": {"create": 1, "update": 0, "skip_existing": 0},
+            "to_amo": {"create": 1, "update": 0, "skip_existing": 0},
+        }
+        assert len(data["samples"]["to_google_create"]) == 1
+        assert len(data["samples"]["to_amo_create"]) == 1
 
