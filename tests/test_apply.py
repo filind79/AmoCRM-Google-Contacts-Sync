@@ -1,4 +1,5 @@
 from fastapi.testclient import TestClient
+from app import amocrm
 from app.google_auth import GoogleAuthError
 
 
@@ -127,4 +128,34 @@ def test_apply_success_passthrough(monkeypatch):
         )
         assert resp.status_code == 200
         assert resp.json() == {"status": "ok", "created": 3, "skipped": 2}
+
+
+def test_apply_skips_none_custom_fields_contacts_no_crash(monkeypatch):
+    from app import sync as sync_module
+
+    async def fake_fetch(limit, since_days):  # noqa: ARG001
+        raw = [{"id": 1, "name": "", "custom_fields_values": None}]
+        parsed = []
+        for c in raw:
+            fields = amocrm.extract_name_and_fields(c)
+            parsed.append({"id": c["id"], "name": fields["name"], "emails": fields["emails"], "phones": fields["phones"]})
+        return parsed
+
+    async def fake_upsert(amo_id, data):  # noqa: ARG001
+        return {"resourceName": f"people/{amo_id}", "action": "create"}
+
+    monkeypatch.setattr(sync_module, "fetch_amo_contacts", fake_fetch)
+    monkeypatch.setattr(
+        sync_module.google_people, "upsert_contact_by_external_id", fake_upsert
+    )
+
+    app = create(monkeypatch, "s")
+    with TestClient(app) as client:
+        resp = client.post(
+            "/sync/contacts/apply?direction=to_google&limit=5&confirm=1",
+            headers={"X-Debug-Secret": "s"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["created"] == 1
 

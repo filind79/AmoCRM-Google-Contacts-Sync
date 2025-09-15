@@ -28,15 +28,33 @@ async def get_contact(contact_id: int) -> Dict[str, Any]:
 
 
 def extract_name_and_fields(contact: Dict[str, Any]) -> Dict[str, Any]:
-    name = contact.get("name") or ""
-    custom_fields = contact.get("custom_fields_values", [])
+    """Extract basic fields from an AmoCRM contact.
+
+    The Amo API may return ``custom_fields_values`` as ``None`` or contain
+    malformed structures without ``field_code`` or ``values``.  This function
+    tolerates such cases and always returns a dictionary with ``name``,
+    ``phones`` and ``emails`` keys.
+    """
+
+    name = contact.get("name") or " ".join(
+        filter(None, [contact.get("first_name", ""), contact.get("last_name", "")])
+    )
+    custom_fields = contact.get("custom_fields_values") or []
     phones: List[str] = []
     emails: List[str] = []
     for field in custom_fields:
+        if not isinstance(field, dict):
+            continue
         code = field.get("field_code")
-        values = [v.get("value") for v in field.get("values", [])]
-        if code == "PHONE":
-            phones.extend(values)
-        elif code == "EMAIL":
-            emails.extend(values)
+        values = field.get("values") or []
+        if not code or not isinstance(values, list):
+            continue
+        for v in values:
+            if not isinstance(v, dict):
+                continue
+            value = v.get("value")
+            if code == "PHONE" and value:
+                phones.append(value)
+            elif code == "EMAIL" and value:
+                emails.append(value)
     return {"name": name, "phones": phones, "emails": emails}
