@@ -10,6 +10,7 @@ from fastapi import HTTPException
 
 from app import amocrm, google_people
 from app.config import settings
+from app.google_people import GoogleRateLimitError
 from app.utils import normalize_email, normalize_phone, unique
 
 logger = logging.getLogger(__name__)
@@ -359,6 +360,15 @@ async def apply_contacts_to_google(limit: int, since_days: int, batch_size: int 
                     created += 1
                     if len(created_samples) < 5:
                         created_samples.append(sample)
+            except GoogleRateLimitError as e:
+                payload = {
+                    "status": "rate_limited",
+                    "processed": processed - 1,
+                    "created": created,
+                    "updated": updated,
+                    "errors": errors,
+                }
+                raise GoogleRateLimitError(e.retry_after, payload) from None
             except httpx.HTTPStatusError as e:
                 message = str(e)
                 try:
@@ -366,9 +376,7 @@ async def apply_contacts_to_google(limit: int, since_days: int, batch_size: int 
                     status = err.get("status")
                     msg = err.get("message")
                     if status or msg:
-                        message = (
-                            f"{status}: {msg}" if status and msg else msg or status
-                        )
+                        message = f"{status}: {msg}" if status and msg else msg or status
                 except Exception:  # pragma: no cover - fallback to default message
                     pass
                 errors.append(

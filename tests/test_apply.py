@@ -1,6 +1,7 @@
 from fastapi.testclient import TestClient
 from app import amocrm
 from app.google_auth import GoogleAuthError
+from app.google_people import GoogleRateLimitError
 
 
 def create(monkeypatch, secret: str | None = None):
@@ -128,6 +129,46 @@ def test_apply_missing_etag(monkeypatch):
         assert data["updated"] == 0
         assert updates == []
         assert data["errors"][0]["reason"] == "missing_etag"
+
+
+def test_apply_rate_limited(monkeypatch):
+    from app import sync as sync_module
+
+    async def fake_fetch_amo(limit, since_days):  # noqa: ARG001
+        return [
+            {"id": 1, "name": "a", "emails": ["a@example.com"], "phones": []},
+            {"id": 2, "name": "b", "emails": ["b@example.com"], "phones": []},
+        ]
+
+    async def fake_search(key):  # noqa: ARG001
+        return None
+
+    async def fake_upsert(amo_id, data):  # noqa: ARG001
+        if amo_id == 1:
+            return {"resourceName": "people/1", "action": "create"}
+        raise GoogleRateLimitError(12)
+
+    monkeypatch.setattr(sync_module, "fetch_amo_contacts", fake_fetch_amo)
+    monkeypatch.setattr(sync_module.google_people, "search_contact", fake_search)
+    monkeypatch.setattr(
+        sync_module.google_people, "upsert_contact_by_external_id", fake_upsert
+    )
+
+    app = create(monkeypatch, "s")
+    with TestClient(app) as client:
+        resp = client.post(
+            "/sync/contacts/apply?limit=5&direction=to_google&confirm=1",
+            headers={"X-Debug-Secret": "s"},
+        )
+        assert resp.status_code == 429
+        assert resp.headers.get("Retry-After") == "12"
+        data = resp.json()
+        assert data["status"] == "rate_limited"
+        assert data["processed"] == 1
+        assert data["created"] == 1
+        assert data["updated"] == 0
+        assert data["rate_limit"]["retry_after_seconds"] == 12
+        assert data["rate_limit"]["reason"] == "google_quota"
 
 
 def test_apply_forbidden_without_secret_or_confirm(monkeypatch):

@@ -2,9 +2,12 @@ from datetime import datetime, timedelta, timezone
 
 import asyncio
 import httpx
+import random
+
+import pytest
 
 from app import google_people
-from app.google_people import _parse_rfc3339, _parse_update_time
+from app.google_people import _parse_rfc3339, _parse_update_time, _request
 
 
 def test_parse_rfc3339():
@@ -42,6 +45,7 @@ def test_create_contact_external_id(monkeypatch):
 
         async def post(self, url, headers=None, json=None):  # noqa: D401, ANN001
             captured["json"] = json
+
             class Resp:
                 status_code = 200
 
@@ -78,3 +82,55 @@ def test_create_contact_external_id(monkeypatch):
     assert captured["json"]["externalIds"] == [
         {"value": "123", "type": "AMOCRM"}
     ]
+
+
+@pytest.mark.asyncio
+async def test_request_retry_after(monkeypatch):
+    called: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:  # noqa: ANN001
+        called.append(delay)
+
+    responses = [
+        httpx.Response(429, headers={"Retry-After": "5"}, request=httpx.Request("GET", "https://x")),
+        httpx.Response(200, request=httpx.Request("GET", "https://x")),
+    ]
+
+    async def fake_request(self, method, url, **kwargs):  # noqa: ANN001
+        return responses.pop(0)
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(random, "uniform", lambda a, b: 0)  # noqa: ARG005
+    monkeypatch.setattr(httpx.AsyncClient, "request", fake_request)
+
+    resp = await _request("GET", "https://x")
+    assert resp.status_code == 200
+    assert called and called[0] == 5
+
+
+@pytest.mark.asyncio
+async def test_request_resource_exhausted(monkeypatch):
+    called: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:  # noqa: ANN001
+        called.append(delay)
+
+    responses = [
+        httpx.Response(
+            403,
+            json={"error": {"status": "RESOURCE_EXHAUSTED"}},
+            request=httpx.Request("GET", "https://x"),
+        ),
+        httpx.Response(200, request=httpx.Request("GET", "https://x")),
+    ]
+
+    async def fake_request(self, method, url, **kwargs):  # noqa: ANN001
+        return responses.pop(0)
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(random, "uniform", lambda a, b: 0)  # noqa: ARG005
+    monkeypatch.setattr(httpx.AsyncClient, "request", fake_request)
+
+    resp = await _request("GET", "https://x")
+    assert resp.status_code == 200
+    assert called and called[0] == 1
