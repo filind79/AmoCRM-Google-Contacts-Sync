@@ -305,13 +305,21 @@ async def create_contact(data: Dict[str, Any]) -> Dict[str, Any]:
     try:
         headers = await _token_headers(session)
         headers["Content-Type"] = "application/json"
-        body: Dict[str, Any] = {"names": [{"displayName": data.get("name", "")}]} 
+
+        body: Dict[str, Any] = {"names": [{"displayName": data.get("name", "")}]}
+        # Сохраняем amo_id как externalId, чтобы потом не делать лишних lookup-ов
+        external_id = data.get("external_id")
+        if external_id is not None:
+            body["externalIds"] = [{"value": str(external_id), "type": "AMOCRM"}]
+
         phones = unique([normalize_phone(p) for p in data.get("phones", []) if p])
         if phones:
             body["phoneNumbers"] = [{"value": p} for p in phones]
+
         emails = unique([normalize_email(e) for e in data.get("emails", []) if e])
         if emails:
             body["emailAddresses"] = [{"value": e} for e in emails]
+
         url = f"{GOOGLE_API_BASE}/people:createContact"
         resp = await _request("POST", url, headers=headers, json=body)
         return resp.json()

@@ -70,6 +70,7 @@ async def fetch_google_contacts(
                 "name": c.name,
                 "emails": emails,
                 "phones": phones,
+                "etag": c.etag,
             }
 
     if amo_contacts:
@@ -96,6 +97,7 @@ async def fetch_google_contacts(
                             "name": c.name,
                             "emails": emails,
                             "phones": phones,
+                            "etag": c.etag,
                         }
                         counters["found"] += 1
 
@@ -248,7 +250,7 @@ def is_existing_in_google(amo_contact: Dict[str, Any], lookup: Dict[str, set[str
     return False
 
 
-async def apply_contacts_to_google(limit: int, since_days: int) -> Dict[str, Any]:
+async def apply_contacts_to_google(limit: int, since_days: int, batch_size: int = 10) -> Dict[str, Any]:
     amo_contacts = await fetch_amo_contacts(limit, since_days)
 
     created_samples: List[Dict[str, Any]] = []
@@ -260,111 +262,138 @@ async def apply_contacts_to_google(limit: int, since_days: int) -> Dict[str, Any
     skip_existing = 0
     processed = 0
 
-    for contact in amo_contacts:
+    for start in range(0, len(amo_contacts), batch_size):
         if processed >= limit:
             break
-        processed += 1
-        try:
-            existing = None
-            keys = [normalize_email(e) for e in contact.get("emails", []) if e]
-            keys += [normalize_phone(p) for p in contact.get("phones", []) if p]
-            for key in keys:
-                existing = await google_people.search_contact(key)
-                if existing:
-                    break
-            sample = {
-                "amo_id": contact.get("id"),
-                "name": contact.get("name"),
-                "phones": contact.get("phones", []),
-                "emails": contact.get("emails", []),
-            }
-            if existing:
-                resource = existing.get("resourceName", "")
-                sample["google_resource_name"] = resource
-                etag = existing.get("etag")
-                if not etag:
-                    errors.append(
-                        {
-                            "amo_id": contact.get("id"),
-                            "reason": "missing_etag",
-                            "message": "Google contact missing etag",
-                        }
-                    )
-                    continue
-                g_emails = {normalize_email(e) for e in existing.get("emails", [])}
-                g_phones = {normalize_phone(p) for p in existing.get("phones", [])}
-                missing_emails = [
-                    normalize_email(e)
-                    for e in contact.get("emails", [])
-                    if normalize_email(e) not in g_emails
-                ]
-                missing_phones = [
-                    normalize_phone(p)
-                    for p in contact.get("phones", [])
-                    if normalize_phone(p) not in g_phones
-                ]
-                current_name = ""
-                if existing.get("names"):
-                    current_name = existing["names"][0].get("displayName") or ""
-                new_name = contact.get("name") or ""
-                need_name = new_name != current_name and new_name
-                if missing_emails or missing_phones or need_name:
-                    data: Dict[str, Any] = {"external_id": contact.get("id")}
-                    if need_name:
-                        data["name"] = new_name
-                    if missing_emails:
-                        data["emails"] = list(g_emails | set(missing_emails))
-                    if missing_phones:
-                        data["phones"] = list(g_phones | set(missing_phones))
-                    await google_people.update_contact(resource, etag, data)
-                    updated += 1
-                    if len(updated_samples) < 5:
-                        updated_samples.append(sample)
-                else:
-                    skip_existing += 1
-                    if len(skipped_samples) < 5:
-                        skipped_samples.append(sample)
-            else:
-                resp = await google_people.upsert_contact_by_external_id(contact["id"], contact)
-                resource = resp.get("resourceName", "")
-                sample["google_resource_name"] = resource
-                created += 1
-                if len(created_samples) < 5:
-                    created_samples.append(sample)
-        except GoogleRateLimitError as e:
-            payload = {
-                "status": "rate_limited",
-                "processed": processed - 1,
-                "created": created,
-                "updated": updated,
-                "errors": errors,
-            }
-            raise GoogleRateLimitError(e.retry_after, payload) from None
-        except httpx.HTTPStatusError as e:
-            message = str(e)
+        batch = amo_contacts[start : start + batch_size]
+        google_batch, _ = await fetch_google_contacts(
+            limit=batch_size,
+            since_days=None,
+            amo_contacts=batch,
+            list_existing=False,
+        )
+        g_by_email: Dict[str, Dict[str, Any]] = {}
+        g_by_phone: Dict[str, Dict[str, Any]] = {}
+        for g in google_batch:
+            for e in g.get("emails", []):
+                g_by_email[normalize_email(e)] = g
+            for p in g.get("phones", []):
+                g_by_phone[normalize_phone(p)] = g
+
+        for contact in batch:
+            if processed >= limit:
+                break
+            processed += 1
             try:
-                err = e.response.json().get("error", {})  # type: ignore[arg-type]
-                status = err.get("status")
-                msg = err.get("message")
-                if status or msg:
-                    message = f"{status}: {msg}" if status and msg else msg or status
-            except Exception:  # pragma: no cover - fallback to default message
-                pass
-            errors.append(
-                {
+                existing = None
+                for e in contact.get("emails", []):
+                    existing = g_by_email.get(normalize_email(e))
+                    if existing:
+                        break
+                if not existing:
+                    for p in contact.get("phones", []):
+                        existing = g_by_phone.get(normalize_phone(p))
+                        if existing:
+                            break
+
+                sample = {
                     "amo_id": contact.get("id"),
-                    "reason": "google_api_error",
-                    "message": message,
+                    "name": contact.get("name"),
+                    "phones": contact.get("phones", []),
+                    "emails": contact.get("emails", []),
                 }
-            )
-        except Exception as e:  # pragma: no cover - network errors
-            errors.append(
-                {
-                    "amo_id": contact.get("id"),
-                    "reason": "google_api_error",
-                    "message": str(e),
+
+                if existing:
+                    sample["google_resource_name"] = existing.get("resourceName", "")
+                    etag = existing.get("etag")
+                    if not etag:
+                        errors.append(
+                            {
+                                "amo_id": contact.get("id"),
+                                "reason": "missing_etag",
+                                "message": "Google contact missing etag",
+                            }
+                        )
+                        continue
+                    g_emails = {normalize_email(e) for e in existing.get("emails", [])}
+                    g_phones = {normalize_phone(p) for p in existing.get("phones", [])}
+                    missing_emails = [
+                        normalize_email(e)
+                        for e in contact.get("emails", [])
+                        if normalize_email(e) not in g_emails
+                    ]
+                    missing_phones = [
+                        normalize_phone(p)
+                        for p in contact.get("phones", [])
+                        if normalize_phone(p) not in g_phones
+                    ]
+                    current_name = existing.get("name") or ""
+                    new_name = contact.get("name") or ""
+                    need_name = new_name and new_name != current_name
+                    if missing_emails or missing_phones or need_name:
+                        data: Dict[str, Any] = {}
+                        if need_name:
+                            data["name"] = new_name
+                        if missing_emails:
+                            data["emails"] = list(g_emails | set(missing_emails))
+                        if missing_phones:
+                            data["phones"] = list(g_phones | set(missing_phones))
+                        await google_people.update_contact(
+                            existing["resourceName"], etag, data
+                        )
+                        updated += 1
+                        if len(updated_samples) < 5:
+                            updated_samples.append(sample)
+                    else:
+                        skip_existing += 1
+                        if len(skipped_samples) < 5:
+                            skipped_samples.append(sample)
+                else:
+                    google_data = {
+                        "name": contact.get("name"),
+                        "phones": contact.get("phones", []),
+                        "emails": contact.get("emails", []),
+                        "external_id": contact.get("id"),
+                    }
+                    resp = await google_people.create_contact(google_data)
+                    sample["google_resource_name"] = resp.get("resourceName", "")
+                    created += 1
+                    if len(created_samples) < 5:
+                        created_samples.append(sample)
+            except GoogleRateLimitError as e:
+                payload = {
+                    "status": "rate_limited",
+                    "processed": processed - 1,
+                    "created": created,
+                    "updated": updated,
+                    "errors": errors,
                 }
-            )
+                raise GoogleRateLimitError(e.retry_after, payload) from None
+            except httpx.HTTPStatusError as e:
+                message = str(e)
+                try:
+                    err = e.response.json().get("error", {})  # type: ignore[arg-type]
+                    status = err.get("status")
+                    msg = err.get("message")
+                    if status or msg:
+                        message = f"{status}: {msg}" if status and msg else msg or status
+                except Exception:  # pragma: no cover - fallback to default message
+                    pass
+                errors.append(
+                    {
+                        "amo_id": contact.get("id"),
+                        "reason": "google_api_error",
+                        "message": message,
+                    }
+                )
+            except Exception as e:  # pragma: no cover - network errors
+                errors.append(
+                    {
+                        "amo_id": contact.get("id"),
+                        "reason": "google_api_error",
+                        "message": str(e),
+                    }
+                )
 
     return {
         "direction": "to_google",
