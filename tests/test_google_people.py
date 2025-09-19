@@ -89,15 +89,6 @@ async def test_request_resource_exhausted(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_create_contact_external_id(monkeypatch):
-    class DummyResp:
-        status_code = 200
-
-        def json(self):  # noqa: D401
-            return {"ok": True}
-
-        def raise_for_status(self):  # noqa: D401
-            return None
-
     class DummyAsyncClient:
         def __init__(self):
             self.payload = None
@@ -110,7 +101,8 @@ async def test_create_contact_external_id(monkeypatch):
 
         async def post(self, url, headers=None, json=None):  # noqa: ANN001
             self.payload = json
-            return DummyResp()
+            request = httpx.Request("POST", url)
+            return httpx.Response(200, request=request, json={"ok": True})
 
     class DummySession:
         def close(self):  # noqa: D401
@@ -124,6 +116,10 @@ async def test_create_contact_external_id(monkeypatch):
     monkeypatch.setattr("app.google_people.get_session", lambda: DummySession())
     monkeypatch.setattr("app.google_people._token_headers", fake_headers)
     monkeypatch.setattr(httpx, "AsyncClient", lambda *args, **kwargs: dummy_client)
+    async def fake_sleep(delay):  # noqa: ANN001
+        return None
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
 
     data = {
         "name": "John Doe",
@@ -140,15 +136,6 @@ async def test_create_contact_external_id(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_create_contact_rate_limited(monkeypatch):
-    class DummyResp:
-        status_code = 429
-
-        def json(self):  # noqa: D401
-            return {}
-
-        def raise_for_status(self):  # noqa: D401
-            return None
-
     class DummyAsyncClient:
         async def __aenter__(self):  # noqa: D401
             return self
@@ -157,12 +144,17 @@ async def test_create_contact_rate_limited(monkeypatch):
             return False
 
         async def post(self, url, headers=None, json=None):  # noqa: ANN001
-            return DummyResp()
+            request = httpx.Request("POST", url)
+            return httpx.Response(429, request=request)
 
     async def fake_headers(_session):  # noqa: ANN001
         return {}
     monkeypatch.setattr("app.google_people._token_headers", fake_headers)
     monkeypatch.setattr(httpx, "AsyncClient", lambda *args, **kwargs: DummyAsyncClient())
+    async def fake_sleep(delay):  # noqa: ANN001
+        return None
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
 
     with pytest.raises(RateLimitError):
         await create_contact({"name": "x"})
@@ -170,15 +162,6 @@ async def test_create_contact_rate_limited(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_create_contact_rate_limited_without_session_patch(monkeypatch):
-    class DummyResp:
-        status_code = 429
-
-        def json(self):  # noqa: D401
-            return {}
-
-        def raise_for_status(self):  # noqa: D401
-            return None
-
     class DummyAsyncClient:
         async def __aenter__(self):  # noqa: D401
             return self
@@ -187,13 +170,18 @@ async def test_create_contact_rate_limited_without_session_patch(monkeypatch):
             return False
 
         async def post(self, url, headers=None, json=None):  # noqa: ANN001
-            return DummyResp()
+            request = httpx.Request("POST", url)
+            return httpx.Response(429, request=request)
 
     async def fake_headers(_session):  # noqa: ANN001
         return {}
 
     monkeypatch.setattr("app.google_people._token_headers", fake_headers)
     monkeypatch.setattr(httpx, "AsyncClient", lambda *args, **kwargs: DummyAsyncClient())
+    async def fake_sleep(delay):  # noqa: ANN001
+        return None
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
 
     with pytest.raises(RateLimitError):
         await create_contact({"name": "x"})

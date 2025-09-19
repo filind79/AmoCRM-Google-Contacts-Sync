@@ -17,7 +17,7 @@ def create(monkeypatch, secret: str | None = None):
 def test_apply_upserts(monkeypatch):
     from app import sync as sync_module
 
-    async def fake_fetch_amo(limit, since_days):  # noqa: ARG001
+    async def fake_fetch_amo(limit, since_days, stats=None):  # noqa: ARG001
         return [
             {"id": 1, "name": "a", "emails": ["a@example.com"], "phones": []},
             {"id": 2, "name": "b", "emails": ["b@example.com"], "phones": []},
@@ -82,7 +82,7 @@ def test_apply_upserts(monkeypatch):
 def test_apply_missing_etag(monkeypatch):
     from app import sync as sync_module
 
-    async def fake_fetch_amo(limit, since_days):  # noqa: ARG001
+    async def fake_fetch_amo(limit, since_days, stats=None):  # noqa: ARG001
         return [{"id": 1, "name": "a", "emails": ["a@example.com"], "phones": []}]
 
     async def fake_search(key):  # noqa: ARG001
@@ -125,7 +125,7 @@ def test_apply_missing_etag(monkeypatch):
 def test_apply_rate_limited(monkeypatch):
     from app import sync as sync_module
 
-    async def fake_fetch_amo(limit, since_days):  # noqa: ARG001
+    async def fake_fetch_amo(limit, since_days, stats=None):  # noqa: ARG001
         return [
             {"id": 1, "name": "a", "emails": ["a@example.com"], "phones": []},
             {"id": 2, "name": "b", "emails": ["b@example.com"], "phones": []},
@@ -246,7 +246,7 @@ def test_apply_success_passthrough(monkeypatch):
 def test_apply_skips_none_custom_fields_contacts_no_crash(monkeypatch):
     from app import sync as sync_module
 
-    async def fake_fetch(limit, since_days):  # noqa: ARG001
+    async def fake_fetch(limit, since_days, stats=None):  # noqa: ARG001
         raw = [{"id": 1, "name": "", "custom_fields_values": None}]
         parsed = []
         for c in raw:
