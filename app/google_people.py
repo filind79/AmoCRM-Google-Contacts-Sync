@@ -33,32 +33,22 @@ GOOGLE_API_BASE = "https://people.googleapis.com/v1"
 GOOGLE_RPM = int(os.getenv("GOOGLE_RPM", "20"))
 
 
-class GoogleRateLimitError(Exception):
+class RateLimitError(Exception):
     """Raised when Google People API quota is exceeded."""
 
-    def __init__(self, retry_after: int, payload: Optional[Dict[str, Any]] | None = None) -> None:
+    def __init__(
+        self,
+        retry_after: int | None = None,
+        payload: Optional[Dict[str, Any]] | None = None,
+    ) -> None:
+        super().__init__("rate_limited")
         self.retry_after = retry_after
         self.payload = payload or {}
 
 
-class RateLimitError(Exception):
-    pass
+# Backwards compatibility alias
+GoogleRateLimitError = RateLimitError
 
-
-class _RateLimiter:
-    def __init__(self, rpm: int) -> None:
-        self.rpm = rpm
-        self._calls: deque[float] = deque()
-
-    async def acquire(self) -> None:
-        while True:
-            now = time.monotonic()
-            while self._calls and now - self._calls[0] >= 60:
-                self._calls.popleft()
-            if len(self._calls) < self.rpm:
-                self._calls.append(now)
-                return
-            await asyncio.sleep(60 - (now - self._calls[0]))
 
 
 _rate_limiter = _RateLimiter(GOOGLE_RPM)
@@ -98,7 +88,7 @@ async def _request(method: str, url: str, **kwargs) -> httpx.Response:
                         wait = 2**attempt
                     wait = min(wait, max_sleep) + random.uniform(0, 1)
                     if attempt >= 4:
-                        raise GoogleRateLimitError(int(wait)) from e
+                        raise RateLimitError(int(wait)) from e
                     await asyncio.sleep(wait)
                     attempt += 1
                     continue
