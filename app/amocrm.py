@@ -12,11 +12,14 @@ AMO_HEADERS = {"Content-Type": "application/json"}
 
 async def get_access_token() -> str:
     session = get_session()
-    token = get_token(session, "amocrm")
-    if not token:
-        raise RuntimeError("AmoCRM token missing")
-    # TODO: refresh token when expired
-    return token.access_token
+    try:
+        token = get_token(session, "amocrm")
+        if not token:
+            raise RuntimeError("AmoCRM token missing")
+        # TODO: refresh token when expired
+        return token.access_token
+    finally:
+        session.close()
 
 
 async def get_contact(contact_id: int) -> Dict[str, Any]:

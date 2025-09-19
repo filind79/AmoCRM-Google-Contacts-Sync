@@ -1,4 +1,6 @@
-from app.amocrm import extract_name_and_fields
+import pytest
+
+from app.amocrm import extract_name_and_fields, get_access_token
 
 
 def test_extract_name_and_fields():
@@ -50,3 +52,26 @@ def test_extract_normalizes_values() -> None:
     result = extract_name_and_fields(contact)
     assert result["phones"] == ["+79991112233"]
     assert result["emails"] == ["user@mail.com"]
+
+
+@pytest.mark.asyncio
+async def test_get_access_token_closes_session(monkeypatch):
+    class DummySession:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    dummy_session = DummySession()
+
+    class DummyToken:
+        access_token = "token"
+
+    monkeypatch.setattr("app.amocrm.get_session", lambda: dummy_session)
+    monkeypatch.setattr("app.amocrm.get_token", lambda session, system: DummyToken())
+
+    token = await get_access_token()
+
+    assert token == "token"
+    assert dummy_session.closed
