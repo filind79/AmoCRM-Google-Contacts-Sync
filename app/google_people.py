@@ -13,9 +13,13 @@ from typing import Any, Dict, List, Optional
 
 import asyncio
 from collections import deque
+import contextvars
+import logging
+import math
 import os
 import random
 import time
+from email.utils import parsedate_to_datetime
 
 import httpx
 
@@ -33,6 +37,9 @@ GOOGLE_API_BASE = "https://people.googleapis.com/v1"
 GOOGLE_RPM = int(os.getenv("GOOGLE_RPM", "20"))
 
 
+logger = logging.getLogger(__name__)
+
+
 class GoogleRateLimitError(Exception):
     """Raised when Google People API quota is exceeded."""
 
@@ -42,7 +49,11 @@ class GoogleRateLimitError(Exception):
 
 
 class RateLimitError(Exception):
-    pass
+    """Legacy error used by tests for direct contact creation."""
+
+    def __init__(self, retry_after: Optional[int] = None):
+        super().__init__("rate_limited")
+        self.retry_after = retry_after
 
 
 class _RateLimiter:
@@ -62,6 +73,29 @@ class _RateLimiter:
 
 
 _rate_limiter = _RateLimiter(GOOGLE_RPM)
+_google_metrics_ctx: contextvars.ContextVar[Optional[Dict[str, int]]] = contextvars.ContextVar(
+    "google_people_metrics",
+    default=None,
+)
+
+
+def bind_metrics(metrics: Dict[str, int]) -> contextvars.Token:
+    """Attach a metrics dictionary to track Google API usage."""
+
+    return _google_metrics_ctx.set(metrics)
+
+
+def reset_metrics(token: contextvars.Token) -> None:
+    """Restore previous metrics binding."""
+
+    _google_metrics_ctx.reset(token)
+
+
+def _increment_metric(key: str, amount: int = 1) -> None:
+    metrics = _google_metrics_ctx.get()
+    if metrics is None:
+        return
+    metrics[key] = metrics.get(key, 0) + amount
 
 
 def _is_resource_exhausted(resp: httpx.Response) -> bool:
@@ -71,8 +105,33 @@ def _is_resource_exhausted(resp: httpx.Response) -> bool:
         return False
 
 
+def _retry_after_seconds(resp: httpx.Response) -> Optional[float]:
+    header = resp.headers.get("Retry-After")
+    if header:
+        try:
+            return float(header)
+        except ValueError:
+            try:
+                parsed = parsedate_to_datetime(header)
+            except (TypeError, ValueError):  # pragma: no cover - defensive
+                parsed = None
+            if parsed is not None:
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                return max(0.0, (parsed - datetime.now(timezone.utc)).total_seconds())
+    reset_header = resp.headers.get("X-RateLimit-Reset")
+    if reset_header:
+        try:
+            reset_ts = float(reset_header)
+        except ValueError:
+            return None
+        return max(0.0, reset_ts - time.time())
+    return None
+
+
 async def _request(method: str, url: str, **kwargs) -> httpx.Response:
-    max_sleep = 30
+    max_attempts = 5
+    max_wait = 60
     attempt = 0
     async with httpx.AsyncClient(timeout=10) as client:
         while True:
@@ -82,24 +141,32 @@ async def _request(method: str, url: str, **kwargs) -> httpx.Response:
                 resp = await client.request(method, url, **kwargs)
             else:
                 resp = await call(url, **kwargs)
+            _increment_metric("google_requests")
             try:
                 resp.raise_for_status()
                 return resp
             except httpx.HTTPStatusError as e:
                 code = e.response.status_code
-                if code == 429 or (code == 403 and _is_resource_exhausted(e.response)):
-                    retry_after_header = e.response.headers.get("retry-after")
-                    if retry_after_header is not None:
-                        try:
-                            wait = float(retry_after_header)
-                        except ValueError:
-                            wait = 0
-                    else:
-                        wait = 2**attempt
-                    wait = min(wait, max_sleep) + random.uniform(0, 1)
-                    if attempt >= 4:
-                        raise GoogleRateLimitError(int(wait)) from e
-                    await asyncio.sleep(wait)
+                is_rate = code == 429 or (code == 403 and _is_resource_exhausted(e.response))
+                if is_rate:
+                    _increment_metric("rate_limit_hits")
+                    retry_after = _retry_after_seconds(e.response)
+                    backoff = min(max_wait, 2 ** attempt)
+                    wait_for = max(retry_after or 0, backoff)
+                    wait_for = min(max_wait, wait_for) + random.uniform(0, 1)
+                    logger.warning(
+                        "google_people.rate_limit",  # noqa: TRY400
+                        extra={
+                            "wait": round(wait_for, 2),
+                            "attempt": attempt + 1,
+                            "status": code,
+                        },
+                    )
+                    if attempt >= max_attempts - 1:
+                        retry = int(math.ceil(wait_for)) or 1
+                        raise GoogleRateLimitError(retry) from e
+                    _increment_metric("retries")
+                    await asyncio.sleep(wait_for)
                     attempt += 1
                     continue
                 raise
@@ -142,6 +209,8 @@ async def list_contacts(
     limit: int,
     since_days: Optional[int] = None,
     counters: Optional[Dict[str, int]] = None,
+    *,
+    fast: bool = False,
 ) -> List[Contact]:
     """Fetch a list of contacts from Google People API with pagination."""
 
@@ -157,9 +226,10 @@ async def list_contacts(
             else None
         )
         while len(collected) < limit:
+            remaining = limit if fast else max(1, limit - len(collected))
             params: Dict[str, Any] = {
                 "personFields": "names,emailAddresses,phoneNumbers,metadata",
-                "pageSize": min(200, limit - len(collected)),
+                "pageSize": min(200, remaining),
             }
             if page_token:
                 params["pageToken"] = page_token
@@ -177,6 +247,7 @@ async def list_contacts(
                     raise
             if counters is not None:
                 counters["requests"] = counters.get("requests", 0) + 1
+                counters["pages"] = counters.get("pages", 0) + 1
             data = resp.json()
             persons = data.get("connections", [])
             if counters is not None:
@@ -203,7 +274,7 @@ async def list_contacts(
                     )
                 )
             page_token = data.get("nextPageToken")
-            if not page_token:
+            if fast or not page_token:
                 break
     finally:
         session.close()
@@ -333,14 +404,10 @@ async def create_contact(data: Dict[str, Any]) -> Dict[str, Any]:
 
     url = f"{GOOGLE_API_BASE}/people:createContact"
 
-    await _rate_limiter.acquire()
-    async with httpx.AsyncClient(timeout=10) as client:
-        resp = await client.post(url, headers=headers, json=body)
-
-    if getattr(resp, "status_code", None) == 429:
-        raise RateLimitError("rate_limited")
-
-    resp.raise_for_status()
+    try:
+        resp = await _request("POST", url, headers=headers, json=body)
+    except GoogleRateLimitError as exc:
+        raise RateLimitError(exc.retry_after) from exc
 
     return resp.json()
 

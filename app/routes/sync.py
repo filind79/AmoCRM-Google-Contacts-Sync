@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import time
+
 from fastapi import APIRouter, Header, HTTPException, Query
 from loguru import logger
 
 from app.config import settings
 from app.google_auth import GoogleAuthError
-from app.google_people import GoogleRateLimitError
+from app.google_people import GoogleRateLimitError, bind_metrics, reset_metrics
 from app.sync import (
     apply_contacts_to_google,
     dry_run_compare,
@@ -28,60 +30,100 @@ async def contacts_dry_run(
     limit: int = Query(50, ge=1, le=500),
     direction: str = Query("both"),
     since_days: int | None = Query(None, ge=1),
+    mode: str = Query("fast"),
 ) -> dict[str, object]:
     direction = _validate_direction(direction)
-    try:
-        amo_contacts = await fetch_amo_contacts(limit) if direction in {"both", "amo"} else []
-    except Exception as e:  # pragma: no cover - unexpected
-        raise HTTPException(status_code=502, detail=f"AmoCRM API error: {e}")
-    try:
-        google_contacts, counters = await fetch_google_contacts(
-            limit,
-            since_days,
-            amo_contacts if direction in {"both", "amo"} else None,
-            list_existing=direction in {"both", "google"},
-        )
-    except GoogleAuthError:
-        from fastapi.responses import JSONResponse
+    if mode not in {"fast", "full"}:
+        raise HTTPException(status_code=400, detail="Invalid mode")
 
-        return JSONResponse(
-            status_code=401,
-            content={"detail": "Google auth required", "auth_url": "/auth/google/start"},
-        )
-    except Exception as e:  # pragma: no cover - unexpected
-        raise HTTPException(status_code=502, detail=f"Google API error: {e}")
+    effective_limit = limit
+    limit_clamped = False
+    if direction == "both" and limit > 20:
+        effective_limit = 20
+        limit_clamped = True
 
-    compare_direction = {
-        "both": "both",
-        "amo": "amo-to-google",
-        "google": "google-to-amo",
-    }[direction]
-    compare = dry_run_compare(amo_contacts, google_contacts, compare_direction)
-
-    actions: dict[str, object] = {}
-    if direction in {"both", "amo"}:
-        actions["amo_to_google"] = compare["actions"]["amo_to_google"]
-    if direction in {"both", "google"}:
-        actions["google_to_amo"] = compare["actions"]["google_to_amo"]
-
-    samples: dict[str, object] = {"updates_preview": compare["samples"]["updates_preview"]}
-    if direction in {"both", "amo"}:
-        samples["amo_only"] = compare["samples"]["amo_only"]
-    if direction in {"both", "google"}:
-        samples["google_only"] = compare["samples"]["google_only"]
-
-    return {
-        "status": "ok",
-        "direction": direction,
-        "summary": {
-            "amo": compare["amo"],
-            "google": compare["google"],
-            "match": compare["match"],
-            "actions": actions,
-        },
-        "samples": samples,
-        "debug": {"counters": counters},
+    metrics: dict[str, int] = {
+        "google_requests": 0,
+        "amo_requests": 0,
+        "retries": 0,
+        "rate_limit_hits": 0,
+        "pages_google": 0,
+        "pages_amo": 0,
     }
+    token = bind_metrics(metrics)
+    started = time.perf_counter()
+
+    try:
+        try:
+            amo_contacts = (
+                await fetch_amo_contacts(effective_limit, since_days, stats=metrics)
+                if direction in {"both", "amo"}
+                else []
+            )
+        except Exception as e:  # pragma: no cover - unexpected
+            raise HTTPException(status_code=502, detail=f"AmoCRM API error: {e}")
+        try:
+            google_contacts, counters = await fetch_google_contacts(
+                effective_limit,
+                since_days,
+                amo_contacts if direction in {"both", "amo"} else None,
+                list_existing=direction in {"both", "google"},
+                mode=mode,
+                stats=metrics,
+            )
+        except GoogleAuthError:
+            from fastapi.responses import JSONResponse
+
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Google auth required", "auth_url": "/auth/google/start"},
+            )
+        except Exception as e:  # pragma: no cover - unexpected
+            raise HTTPException(status_code=502, detail=f"Google API error: {e}")
+        compare_direction = {
+            "both": "both",
+            "amo": "amo-to-google",
+            "google": "google-to-amo",
+        }[direction]
+        compare = dry_run_compare(amo_contacts, google_contacts, compare_direction)
+
+        actions: dict[str, object] = {}
+        if direction in {"both", "amo"}:
+            actions["amo_to_google"] = compare["actions"]["amo_to_google"]
+        if direction in {"both", "google"}:
+            actions["google_to_amo"] = compare["actions"]["google_to_amo"]
+
+        samples: dict[str, object] = {"updates_preview": compare["samples"]["updates_preview"]}
+        if direction in {"both", "amo"}:
+            samples["amo_only"] = compare["samples"]["amo_only"]
+        if direction in {"both", "google"}:
+            samples["google_only"] = compare["samples"]["google_only"]
+
+        duration_ms = int((time.perf_counter() - started) * 1000)
+
+        return {
+            "status": "ok",
+            "direction": direction,
+            "summary": {
+                "amo": compare["amo"],
+                "google": compare["google"],
+                "match": compare["match"],
+                "actions": actions,
+            },
+            "samples": samples,
+            "debug": {"counters": counters},
+            "duration_ms": duration_ms,
+            "google_requests": metrics.get("google_requests", 0),
+            "amo_requests": metrics.get("amo_requests", 0),
+            "retries": metrics.get("retries", 0),
+            "rate_limit_hits": metrics.get("rate_limit_hits", 0),
+            "pages_google": metrics.get("pages_google", 0),
+            "pages_amo": metrics.get("pages_amo", 0),
+            "limit_clamped": limit_clamped,
+            "mode": mode,
+        }
+    finally:
+        reset_metrics(token)
 
 
 @router.post("/contacts/apply")
