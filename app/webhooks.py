@@ -1,13 +1,14 @@
 import hashlib
 import hmac
+import json
 from typing import Any, Dict, List
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Header, HTTPException, Request
 
 from app.amocrm import extract_name_and_fields, get_contact
+from app.config import settings
 from app.google_people import upsert_contact_by_external_id
 from app.storage import get_session, save_link
-from app.config import settings
 
 router = APIRouter()
 processed_events: set[str] = set()
@@ -23,10 +24,12 @@ def verify_signature(body: bytes, signature: str | None) -> bool:
 
 
 @router.post("/webhooks/amocrm")
-async def handle_webhook(payload: Dict[str, Any], x_signature: str | None = Header(None)):
-    body_bytes = str(payload).encode()
+async def handle_webhook(request: Request, x_signature: str | None = Header(None)):
+    body_bytes = await request.body()
     if not verify_signature(body_bytes, x_signature):
         raise HTTPException(status_code=401, detail="Invalid signature")
+
+    payload: Dict[str, Any] = json.loads(body_bytes)
 
     contact_ids: List[int] = []
     events = payload.get("contacts", {}).get("update", [])
@@ -38,13 +41,16 @@ async def handle_webhook(payload: Dict[str, Any], x_signature: str | None = Head
     processed_events.add(event_id)
 
     session = get_session()
-    results = []
-    for cid in contact_ids:
-        contact_data = await get_contact(cid)
-        extracted = extract_name_and_fields(contact_data)
-        google_contact = await upsert_contact_by_external_id(cid, extracted)
-        resource_name = google_contact.get("resourceName")
-        if resource_name:
-            save_link(session, str(cid), resource_name)
-        results.append({"amo_contact_id": cid, "google_resource_name": resource_name})
-    return {"synced": results}
+    try:
+        results = []
+        for cid in contact_ids:
+            contact_data = await get_contact(cid)
+            extracted = extract_name_and_fields(contact_data)
+            google_contact = await upsert_contact_by_external_id(cid, extracted)
+            resource_name = google_contact.get("resourceName")
+            if resource_name:
+                save_link(session, str(cid), resource_name)
+            results.append({"amo_contact_id": cid, "google_resource_name": resource_name})
+        return {"synced": results}
+    finally:
+        session.close()
