@@ -38,13 +38,16 @@ async def handle_webhook(payload: Dict[str, Any], x_signature: str | None = Head
     processed_events.add(event_id)
 
     session = get_session()
-    results = []
-    for cid in contact_ids:
-        contact_data = await get_contact(cid)
-        extracted = extract_name_and_fields(contact_data)
-        google_contact = await upsert_contact_by_external_id(cid, extracted)
-        resource_name = google_contact.get("resourceName")
-        if resource_name:
-            save_link(session, str(cid), resource_name)
-        results.append({"amo_contact_id": cid, "google_resource_name": resource_name})
-    return {"synced": results}
+    try:
+        results = []
+        for cid in contact_ids:
+            contact_data = await get_contact(cid)
+            extracted = extract_name_and_fields(contact_data)
+            google_contact = await upsert_contact_by_external_id(cid, extracted)
+            resource_name = google_contact.get("resourceName")
+            if resource_name:
+                save_link(session, str(cid), resource_name)
+            results.append({"amo_contact_id": cid, "google_resource_name": resource_name})
+        return {"synced": results}
+    finally:
+        session.close()

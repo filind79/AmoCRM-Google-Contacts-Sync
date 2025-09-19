@@ -18,7 +18,10 @@ async def sync_contact(payload: Dict[str, Any]):
     resource_name = google_contact.get("resourceName")
     if resource_name:
         session = get_session()
-        save_link(session, str(cid), resource_name)
+        try:
+            save_link(session, str(cid), resource_name)
+        finally:
+            session.close()
     return {"amo_contact_id": cid, "google_resource_name": resource_name}
 
 
