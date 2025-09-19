@@ -2,7 +2,7 @@ import hashlib
 import hmac
 from typing import Any, Dict, List
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Header, HTTPException, Request
 
 from app.amocrm import extract_name_and_fields, get_contact
 from app.google_people import upsert_contact_by_external_id
@@ -23,8 +23,10 @@ def verify_signature(body: bytes, signature: str | None) -> bool:
 
 
 @router.post("/webhooks/amocrm")
-async def handle_webhook(payload: Dict[str, Any], x_signature: str | None = Header(None)):
-    body_bytes = str(payload).encode()
+async def handle_webhook(
+    payload: Dict[str, Any], request: Request, x_signature: str | None = Header(None)
+):
+    body_bytes = await request.body()
     if not verify_signature(body_bytes, x_signature):
         raise HTTPException(status_code=401, detail="Invalid signature")
 
