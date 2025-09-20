@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timezone
 
 from fastapi.testclient import TestClient
@@ -77,6 +78,8 @@ def test_dry_run_ok(monkeypatch):
         assert len(data["samples"]["amo_only"]) == 1
         assert len(data["samples"]["google_only"]) == 1
         assert data["debug"]["counters"]["requests"] == 1
+        assert data["partial"] is False
+        assert data["errors"] == []
 
 
 def test_dry_run_direction_amo(monkeypatch):
@@ -215,4 +218,71 @@ def test_dry_run_limit_clamped(monkeypatch):
         assert data["limit_clamped"] is True
         assert data["mode"] == "fast"
         assert data["amo_requests"] == 1
+
+
+def test_dry_run_fast_both_partial_timeout(monkeypatch):
+    from app.routes import sync as sync_route
+
+    async def fake_fetch_google(
+        limit,
+        since_days=None,
+        amo_contacts=None,
+        list_existing=True,
+        *,
+        mode="fast",
+        stats=None,
+    ):  # noqa: ARG001
+        raise asyncio.TimeoutError
+
+    async def fake_fetch_amo(limit, since_days=None, stats=None):  # noqa: ARG001
+        return [{"id": 1, "name": "a", "emails": ["a@ex.com"], "phones": []}]
+
+    monkeypatch.setattr(sync_route, "fetch_google_contacts", fake_fetch_google)
+    monkeypatch.setattr(sync_route, "fetch_amo_contacts", fake_fetch_amo)
+
+    app = create(monkeypatch)
+    with TestClient(app) as client:
+        resp = client.get("/sync/contacts/dry-run?limit=10&direction=both&mode=fast")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["partial"] is True
+        assert data["errors"] == [
+            {"side": "google", "reason": "timeout", "message": "Google fetch timed out"}
+        ]
+        assert data["summary"]["google"]["fetched"] == 0
+        assert data["summary"]["amo"]["fetched"] == 1
+        assert data["debug"]["counters"] == {}
+
+
+def test_dry_run_fast_both_partial_fetch_error(monkeypatch):
+    from app.routes import sync as sync_route
+
+    async def fake_fetch_google(
+        limit,
+        since_days=None,
+        amo_contacts=None,
+        list_existing=True,
+        *,
+        mode="fast",
+        stats=None,
+    ):  # noqa: ARG001
+        return ([], {"requests": 0, "considered": 0, "found": 0})
+
+    async def fake_fetch_amo(limit, since_days=None, stats=None):  # noqa: ARG001
+        raise RuntimeError("amo broken")
+
+    monkeypatch.setattr(sync_route, "fetch_google_contacts", fake_fetch_google)
+    monkeypatch.setattr(sync_route, "fetch_amo_contacts", fake_fetch_amo)
+
+    app = create(monkeypatch)
+    with TestClient(app) as client:
+        resp = client.get("/sync/contacts/dry-run?limit=10&direction=both&mode=fast")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["partial"] is True
+        assert data["errors"] == [
+            {"side": "amo", "reason": "fetch_error", "message": "amo broken"}
+        ]
+        assert data["summary"]["amo"]["fetched"] == 0
+        assert data["summary"]["google"]["fetched"] == 0
 

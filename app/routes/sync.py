@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import time
+from contextlib import suppress
 
 from fastapi import APIRouter, Header, HTTPException, Query
 from loguru import logger
@@ -54,38 +56,127 @@ async def contacts_dry_run(
     started = time.perf_counter()
 
     try:
-        try:
-            amo_contacts = (
-                await fetch_amo_contacts(effective_limit, since_days, stats=metrics)
-                if direction in {"both", "amo"}
-                else []
-            )
-        except Exception as e:  # pragma: no cover - unexpected
-            raise HTTPException(status_code=502, detail=f"AmoCRM API error: {e}")
-        try:
-            google_contacts, counters = await fetch_google_contacts(
-                effective_limit,
-                since_days,
-                amo_contacts if direction in {"both", "amo"} else None,
-                list_existing=direction in {"both", "google"},
-                mode=mode,
-                stats=metrics,
-            )
-        except GoogleAuthError:
-            from fastapi.responses import JSONResponse
+        partial = False
+        errors: list[dict[str, str]] = []
+        counters: dict[str, int] = {}
 
-            return JSONResponse(
-                status_code=401,
-                content={"detail": "Google auth required", "auth_url": "/auth/google/start"},
+        def _format_error_message(exc: Exception) -> str:
+            if isinstance(exc, HTTPException):
+                detail = exc.detail  # type: ignore[attr-defined]
+                return str(detail)
+            message = str(exc)
+            return message if message else exc.__class__.__name__
+
+        if direction == "both" and mode == "fast":
+            amo_contacts: list[dict[str, object]] = []
+            google_contacts: list[dict[str, object]] = []
+            amo_task = asyncio.create_task(
+                fetch_amo_contacts(effective_limit, since_days, stats=metrics)
             )
-        except Exception as e:  # pragma: no cover - unexpected
-            raise HTTPException(status_code=502, detail=f"Google API error: {e}")
+            google_task = asyncio.create_task(
+                fetch_google_contacts(
+                    effective_limit,
+                    since_days,
+                    None,
+                    list_existing=True,
+                    mode=mode,
+                    stats=metrics,
+                )
+            )
+
+            for task, side in ((amo_task, "amo"), (google_task, "google")):
+                try:
+                    if side == "amo":
+                        amo_contacts = await asyncio.wait_for(task, timeout=20)
+                    else:
+                        google_contacts, counters = await asyncio.wait_for(task, timeout=20)
+                except GoogleAuthError:
+                    if side == "google":
+                        if not amo_task.done():
+                            amo_task.cancel()
+                            with suppress(asyncio.CancelledError):
+                                await amo_task
+                        from fastapi.responses import JSONResponse
+
+                        return JSONResponse(
+                            status_code=401,
+                            content={
+                                "detail": "Google auth required",
+                                "auth_url": "/auth/google/start",
+                            },
+                        )
+                    raise
+                except asyncio.TimeoutError:
+                    partial = True
+                    errors.append(
+                        {
+                            "side": side,
+                            "reason": "timeout",
+                            "message": f"{side.capitalize()} fetch timed out",
+                        }
+                    )
+                    if not task.done():
+                        task.cancel()
+                        with suppress(asyncio.CancelledError):
+                            await task
+                    if side == "google":
+                        google_contacts = []
+                        counters = {}
+                    else:
+                        amo_contacts = []
+                except Exception as e:  # pragma: no cover - unexpected
+                    partial = True
+                    errors.append(
+                        {
+                            "side": side,
+                            "reason": "fetch_error",
+                            "message": _format_error_message(e),
+                        }
+                    )
+                    if side == "google":
+                        google_contacts = []
+                        counters = {}
+                    else:
+                        amo_contacts = []
+            google_contacts_result = google_contacts
+        else:
+            try:
+                amo_contacts = (
+                    await fetch_amo_contacts(effective_limit, since_days, stats=metrics)
+                    if direction in {"both", "amo"}
+                    else []
+                )
+            except Exception as e:  # pragma: no cover - unexpected
+                raise HTTPException(status_code=502, detail=f"AmoCRM API error: {e}")
+            try:
+                google_contacts, counters = await fetch_google_contacts(
+                    effective_limit,
+                    since_days,
+                    amo_contacts if direction in {"both", "amo"} else None,
+                    list_existing=direction in {"both", "google"},
+                    mode=mode,
+                    stats=metrics,
+                )
+            except GoogleAuthError:
+                from fastapi.responses import JSONResponse
+
+                return JSONResponse(
+                    status_code=401,
+                    content={
+                        "detail": "Google auth required",
+                        "auth_url": "/auth/google/start",
+                    },
+                )
+            except Exception as e:  # pragma: no cover - unexpected
+                raise HTTPException(status_code=502, detail=f"Google API error: {e}")
+            google_contacts_result = google_contacts
+
         compare_direction = {
             "both": "both",
             "amo": "amo-to-google",
             "google": "google-to-amo",
         }[direction]
-        compare = dry_run_compare(amo_contacts, google_contacts, compare_direction)
+        compare = dry_run_compare(amo_contacts, google_contacts_result, compare_direction)
 
         actions: dict[str, object] = {}
         if direction in {"both", "amo"}:
@@ -112,6 +203,8 @@ async def contacts_dry_run(
             },
             "samples": samples,
             "debug": {"counters": counters},
+            "partial": partial,
+            "errors": errors,
             "duration_ms": duration_ms,
             "google_requests": metrics.get("google_requests", 0),
             "amo_requests": metrics.get("amo_requests", 0),
