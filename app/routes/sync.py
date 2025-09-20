@@ -40,7 +40,7 @@ async def contacts_dry_run(
 
     effective_limit = limit
     limit_clamped = False
-    if direction == "both" and limit > 20:
+    if direction == "both" and mode == "fast" and limit > 20:
         effective_limit = 20
         limit_clamped = True
 
@@ -202,7 +202,7 @@ async def contacts_dry_run(
                 "actions": actions,
             },
             "samples": samples,
-            "debug": {"counters": counters},
+            "debug": {"counters": counters, "limit": effective_limit},
             "partial": partial,
             "errors": errors,
             "duration_ms": duration_ms,
