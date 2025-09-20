@@ -167,8 +167,8 @@ async def ping_google(_=Depends(require_debug_secret)) -> dict[str, object]:
         session.close()
 
     headers = {"Authorization": f"Bearer {access_token}"}
-    params = {"personFields": "metadata"}
-    url = f"{GOOGLE_API_BASE}/people/me"
+    params = {"personFields": "metadata", "pageSize": 1}
+    url = f"{GOOGLE_API_BASE}/people/me/connections"
     try:
         async with httpx.AsyncClient(timeout=5) as client:
             resp = await client.get(url, headers=headers, params=params)

@@ -79,7 +79,8 @@ def test_ping_google_success(monkeypatch):
             return False
 
         async def get(self, url, headers=None, params=None):  # noqa: ANN001
-            assert params == {"personFields": "metadata"}
+            assert url.endswith("/people/me/connections")
+            assert params == {"personFields": "metadata", "pageSize": 1}
             request = httpx.Request("GET", url)
             return httpx.Response(200, request=request, json={"metadata": {}})
 
@@ -123,6 +124,8 @@ def test_ping_google_rate_limited(monkeypatch):
             return False
 
         async def get(self, url, headers=None, params=None):  # noqa: ANN001
+            assert url.endswith("/people/me/connections")
+            assert params == {"personFields": "metadata", "pageSize": 1}
             request = httpx.Request("GET", url)
             return httpx.Response(
                 429,
@@ -158,6 +161,8 @@ def test_ping_google_forbidden(monkeypatch):
             return False
 
         async def get(self, url, headers=None, params=None):  # noqa: ANN001
+            assert url.endswith("/people/me/connections")
+            assert params == {"personFields": "metadata", "pageSize": 1}
             request = httpx.Request("GET", url)
             return httpx.Response(
                 403,
@@ -177,4 +182,48 @@ def test_ping_google_forbidden(monkeypatch):
     assert payload["status"] == 403
     assert payload["scopes_ok"] is False
     assert payload["error"] == "insufficient scopes"
+
+
+def test_ping_google_profile_scope_regression(monkeypatch):
+    _clear_tokens()
+    _store_google_token()
+
+    class RegressionClient:
+        async def __aenter__(self):  # noqa: D401
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):  # noqa: ANN001, D401
+            return False
+
+        async def get(self, url, headers=None, params=None):  # noqa: ANN001
+            # Simulate Google rejecting the old `people/me` probe when only the contacts scope is present
+            if url.endswith("/people/me"):
+                request = httpx.Request("GET", url)
+                return httpx.Response(
+                    403,
+                    request=request,
+                    json={
+                        "error": {
+                            "message": "Request requires one of the following scopes: [profile]",
+                            "status": "PERMISSION_DENIED",
+                        }
+                    },
+                )
+
+            assert url.endswith("/people/me/connections")
+            assert params == {"personFields": "metadata", "pageSize": 1}
+            request = httpx.Request("GET", url)
+            return httpx.Response(200, request=request, json={"connections": []})
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *args, **kwargs: RegressionClient())
+
+    app = _create_app(monkeypatch, "secret")
+    with TestClient(app) as client:
+        resp = client.get("/debug/ping-google", headers={"X-Debug-Secret": "secret"})
+
+    payload = resp.json()
+    assert resp.status_code == 200
+    assert payload["ok"] is True
+    assert payload["status"] == 200
+    assert payload["scopes_ok"] is True
 
