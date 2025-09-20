@@ -6,12 +6,11 @@ from email.utils import parsedate_to_datetime
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException
-from fastapi.responses import JSONResponse
 from sqlalchemy import select
 
 from app.config import settings
-from app.google_auth import GoogleAuthError
-from app.google_people import GOOGLE_API_BASE, get_access_token
+from app.google_auth import GoogleAuthError, get_valid_google_access_token
+from app.google_people import GOOGLE_API_BASE
 from app.storage import Token, get_session, get_token
 
 router = APIRouter()
@@ -96,56 +95,100 @@ def _parse_retry_after(resp: httpx.Response) -> int | None:
     return None
 
 
-@router.get("/ping-google")
-async def ping_google(_=Depends(require_debug_secret)):
-    start = time.perf_counter()
-    try:
-        token = await get_access_token()
-    except GoogleAuthError:
-        return JSONResponse(
-            status_code=401,
-            content={"detail": "Google auth required", "auth_url": "/auth/google/start"},
-        )
+def _elapsed_ms(start: float) -> int:
+    elapsed = int((time.perf_counter() - start) * 1000)
+    return elapsed if elapsed > 0 else 1
 
-    headers = {"Authorization": f"Bearer {token}"}
-    params = {"personFields": "names"}
+
+def _scope_set(scopes: str | None) -> set[str]:
+    if not scopes:
+        return set()
+    return {scope for scope in scopes.replace(",", " ").split() if scope}
+
+
+def _extract_error(resp: httpx.Response) -> str:
+    try:
+        payload = resp.json()
+    except ValueError:
+        text = resp.text.strip()
+        return text or f"HTTP {resp.status_code}"
+    if isinstance(payload, dict):
+        error = payload.get("error")
+        if isinstance(error, dict):
+            message = error.get("message")
+            if isinstance(message, str) and message:
+                return message
+            status = error.get("status")
+            if isinstance(status, str) and status:
+                return status
+        if isinstance(error, str) and error:
+            return error
+    return str(payload)
+
+
+_AUTH_ERROR_STATUS: dict[str, int] = {
+    "token_missing": 401,
+    "refresh_unavailable": 401,
+    "refresh_failed": 403,
+}
+
+
+def _base_response(ok: bool, latency_ms: int, status: int | None, scopes_ok: bool) -> dict[str, object]:
+    return {
+        "ok": ok,
+        "latency_ms": latency_ms,
+        "status": status,
+        "scopes_ok": scopes_ok,
+    }
+
+
+@router.get("/ping-google")
+async def ping_google(_=Depends(require_debug_secret)) -> dict[str, object]:
+    start = time.perf_counter()
+    required_scopes = _scope_set(settings.google_scopes)
+    session = get_session()
+    access_token: str | None = None
+    token = get_token(session, "google")
+    token_scopes = _scope_set(token.scopes if token else None)
+    if required_scopes:
+        scopes_ok = bool(token) and required_scopes.issubset(token_scopes)
+    else:
+        scopes_ok = bool(token)
+    try:
+        try:
+            access_token = await get_valid_google_access_token(session)
+        except GoogleAuthError as exc:
+            latency_ms = _elapsed_ms(start)
+            status = _AUTH_ERROR_STATUS.get(exc.reason, 503)
+            response = _base_response(False, latency_ms, status, scopes_ok)
+            response["error"] = exc.reason
+            return response
+    finally:
+        session.close()
+
+    headers = {"Authorization": f"Bearer {access_token}"}
+    params = {"personFields": "metadata"}
     url = f"{GOOGLE_API_BASE}/people/me"
     try:
         async with httpx.AsyncClient(timeout=5) as client:
             resp = await client.get(url, headers=headers, params=params)
     except httpx.RequestError as exc:
-        latency_ms = int((time.perf_counter() - start) * 1000)
-        return {"ok": False, "latency_ms": latency_ms, "retry_after": None, "error": str(exc)}
+        latency_ms = _elapsed_ms(start)
+        response = _base_response(False, latency_ms, 503, scopes_ok)
+        response["error"] = str(exc)
+        return response
 
-    latency_ms = int((time.perf_counter() - start) * 1000)
+    latency_ms = _elapsed_ms(start)
+    status_code = resp.status_code
+    if status_code in (401, 403):
+        scopes_ok = False
+    retry_after = _parse_retry_after(resp) if status_code == 429 else None
 
-    if resp.status_code == 401:
-        return JSONResponse(
-            status_code=401,
-            content={"detail": "Google auth required", "auth_url": "/auth/google/start"},
-        )
+    if status_code != 200:
+        response = _base_response(False, latency_ms, status_code, scopes_ok)
+        response["error"] = _extract_error(resp)
+        if retry_after is not None:
+            response["retry_after"] = retry_after
+        return response
 
-    if resp.status_code == 429:
-        retry_after = _parse_retry_after(resp)
-        return {
-            "ok": False,
-            "latency_ms": latency_ms,
-            "retry_after": retry_after,
-            "error": "rate_limited",
-        }
-
-    if resp.status_code != 200:
-        detail = None
-        try:
-            detail = resp.json()
-        except ValueError:
-            detail = resp.text
-        return {
-            "ok": False,
-            "latency_ms": latency_ms,
-            "retry_after": None,
-            "error": detail,
-            "status": resp.status_code,
-        }
-
-    return {"ok": True, "latency_ms": latency_ms, "retry_after": None}
+    return _base_response(True, latency_ms, status_code, scopes_ok)
