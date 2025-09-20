@@ -286,3 +286,49 @@ def test_dry_run_fast_both_partial_fetch_error(monkeypatch):
         assert data["summary"]["amo"]["fetched"] == 0
         assert data["summary"]["google"]["fetched"] == 0
 
+
+def test_dry_run_direction_amo(monkeypatch):
+    from app.routes import sync as sync_route
+
+    async def fake_fetch_amo(limit):  # noqa: ARG001
+        return [{"id": 1, "name": "a", "emails": [], "phones": []}]
+
+    async def fake_fetch_google(limit, since_days=None):  # noqa: ARG001
+        raise AssertionError("fetch_google_contacts should not be called")
+
+    monkeypatch.setattr(sync_route, "fetch_amo_contacts", fake_fetch_amo)
+    monkeypatch.setattr(sync_route, "fetch_google_contacts", fake_fetch_google)
+
+    app = create(monkeypatch)
+    with TestClient(app) as client:
+        resp = client.get("/sync/contacts/dry-run?limit=10&direction=amo")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["direction"] == "amo"
+        assert data["counts"] == {"google": 0, "amo": 1}
+        assert data["google_sample"] == []
+        assert data["amo_sample"] == [{"id": 1, "name": "a", "emails": [], "phones": []}]
+
+
+def test_dry_run_direction_google(monkeypatch):
+    from app.routes import sync as sync_route
+
+    async def fake_fetch_google(limit, since_days=None):  # noqa: ARG001
+        return [{"resourceName": "r1", "name": "g", "emails": [], "phones": []}]
+
+    async def fake_fetch_amo(limit):  # noqa: ARG001
+        raise AssertionError("fetch_amo_contacts should not be called")
+
+    monkeypatch.setattr(sync_route, "fetch_google_contacts", fake_fetch_google)
+    monkeypatch.setattr(sync_route, "fetch_amo_contacts", fake_fetch_amo)
+
+    app = create(monkeypatch)
+    with TestClient(app) as client:
+        resp = client.get("/sync/contacts/dry-run?limit=10&direction=google")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["direction"] == "google"
+        assert data["counts"] == {"google": 1, "amo": 0}
+        assert data["amo_sample"] == []
+        assert data["google_sample"] == [{"resourceName": "r1", "name": "g", "emails": [], "phones": []}]
+
