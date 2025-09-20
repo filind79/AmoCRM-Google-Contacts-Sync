@@ -27,6 +27,12 @@ def _validate_direction(direction: str) -> str:
     return direction
 
 
+def _calculate_effective_limit(limit: int, direction: str, mode: str) -> tuple[int, bool]:
+    if direction == "both" and mode == "fast" and limit > 20:
+        return 20, True
+    return limit, False
+
+
 @router.get("/contacts/dry-run")
 async def contacts_dry_run(
     limit: int = Query(50, ge=1, le=500),
@@ -38,11 +44,7 @@ async def contacts_dry_run(
     if mode not in {"fast", "full"}:
         raise HTTPException(status_code=400, detail="Invalid mode")
 
-    effective_limit = limit
-    limit_clamped = False
-    if direction == "both" and mode == "fast" and limit > 20:
-        effective_limit = 20
-        limit_clamped = True
+    effective_limit, limit_clamped = _calculate_effective_limit(limit, direction, mode)
 
     metrics: dict[str, int] = {
         "google_requests": 0,
