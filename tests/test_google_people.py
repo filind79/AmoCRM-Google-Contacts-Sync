@@ -268,6 +268,38 @@ async def test_update_contact_uses_unstructured_name_and_etag(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_update_contact_name_only_omits_phone_numbers(monkeypatch):
+    captured: dict[str, Any] = {}
+
+    class DummySession:
+        def close(self):
+            return None
+
+    async def fake_headers(_session):
+        return {}
+
+    async def fake_request(method, url, **kwargs):
+        captured["json"] = kwargs.get("json")
+        captured["params"] = kwargs.get("params")
+
+        class DummyResponse:
+            def json(self):
+                return {}
+
+        return DummyResponse()
+
+    monkeypatch.setattr("app.google_people.get_session", lambda: DummySession())
+    monkeypatch.setattr("app.google_people._token_headers", fake_headers)
+    monkeypatch.setattr("app.google_people._request", fake_request)
+
+    await update_contact("people/456", "etag-only-name", {"name": "Only Name"})
+
+    assert captured["json"]["names"][0]["unstructuredName"] == "Only Name"
+    assert "phoneNumbers" not in captured["json"]
+    assert captured["params"]["updatePersonFields"] == "names"
+
+
+@pytest.mark.asyncio
 async def test_update_contact_skips_empty_name(monkeypatch):
     captured: dict[str, Any] = {}
 
