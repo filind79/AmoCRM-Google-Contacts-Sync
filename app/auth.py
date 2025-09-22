@@ -6,7 +6,7 @@ from fastapi import APIRouter
 from fastapi.responses import RedirectResponse
 
 from app.config import settings
-from app.storage import get_session, save_token
+from app.storage import get_session, get_token, save_token
 
 router = APIRouter()
 
@@ -44,14 +44,21 @@ async def auth_google_callback(code: str):
     expires_in = token.get("expires_in")
     expiry = datetime.utcnow() + timedelta(seconds=expires_in) if expires_in else None
     session = get_session()
-    save_token(
-        session,
-        "google",
-        access_token=token["access_token"],
-        refresh_token=token.get("refresh_token"),
-        expiry=expiry,
-        scopes=settings.google_scopes,
-    )
+    try:
+        existing_token = get_token(session, "google")
+        refresh_token = token.get("refresh_token") or (
+            existing_token.refresh_token if existing_token else None
+        )
+        save_token(
+            session,
+            "google",
+            access_token=token["access_token"],
+            refresh_token=refresh_token,
+            expiry=expiry,
+            scopes=settings.google_scopes,
+        )
+    finally:
+        session.close()
     return {"status": "ok"}
 
 
