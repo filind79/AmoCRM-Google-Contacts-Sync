@@ -2,8 +2,10 @@ import asyncio
 from datetime import datetime, timedelta
 
 import httpx
+import pytest
 
 from app import google_people
+from app.auth import auth_google_callback
 from app.google_auth import get_valid_google_access_token
 from app.storage import Token, get_session, save_token, init_db
 
@@ -95,4 +97,60 @@ def test_people_client_retries(monkeypatch):
 
     contacts = asyncio.run(google_people.list_contacts(10))
     assert len(contacts) == 1
+
+
+@pytest.mark.asyncio
+async def test_google_callback_reuses_refresh_token(monkeypatch):
+    init_db()
+    base_session = get_session()
+    base_session.query(Token).delete()
+    base_session.commit()
+    save_token(base_session, "google", "old", "refresh", None, scopes="")
+    base_session.close()
+
+    real_get_session = get_session
+
+    class TrackingSession:
+        def __init__(self, inner):
+            self._inner = inner
+            self.closed = False
+
+        def close(self):  # noqa: D401
+            self.closed = True
+            return self._inner.close()
+
+        def __getattr__(self, item):  # noqa: D401
+            return getattr(self._inner, item)
+
+    holder = {}
+
+    def fake_get_session():
+        session = TrackingSession(real_get_session())
+        holder["session"] = session
+        return session
+
+    class DummyAsyncClient:
+        async def __aenter__(self):  # noqa: D401
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):  # noqa: ANN001, D401
+            return False
+
+        async def post(self, url, data=None):  # noqa: ANN001, D401
+            assert url == "https://oauth2.googleapis.com/token"
+            return DummyResponse(200, {"access_token": "new", "expires_in": 3600})
+
+    monkeypatch.setattr("app.auth.get_session", fake_get_session)
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *args, **kwargs: DummyAsyncClient())
+
+    await auth_google_callback("code")
+
+    tracked_session = holder["session"]
+    assert tracked_session.closed is True
+
+    session = real_get_session()
+    stored = session.query(Token).filter(Token.system == "google").one()
+    assert stored.access_token == "new"
+    assert stored.refresh_token == "refresh"
+    session.close()
 
