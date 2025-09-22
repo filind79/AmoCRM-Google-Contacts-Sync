@@ -343,14 +343,29 @@ async def upsert_contact_by_external_id(amo_contact_id: int, data: Dict[str, Any
         headers["Content-Type"] = "application/json"
         external_id = {"value": str(amo_contact_id), "type": "AMOCRM"}
         url = f"{GOOGLE_API_BASE}/people:searchContacts"
-        params = {"query": str(amo_contact_id), "readMask": "names,phoneNumbers,emailAddresses"}
+        params = {
+            "query": str(amo_contact_id),
+            "readMask": "names,phoneNumbers,emailAddresses,metadata",
+        }
         resp = await _request("GET", url, params=params, headers=headers)
         results = resp.json().get("results", [])
-        resource_name = None
+        person: Dict[str, Any] = {}
+        resource_name: Optional[str] = None
         if results:
-            resource_name = results[0]["person"]["resourceName"]
+            person = results[0].get("person", {})
+            resource_name = person.get("resourceName")
 
-        body = {"names": [{"displayName": data["name"]}], "externalIds": [external_id]}
+        etag = person.get("etag")
+        body: Dict[str, Any] = {"externalIds": [external_id]}
+        name_value = data.get("name")
+        if not isinstance(name_value, str):
+            name_value = "" if name_value is None else str(name_value)
+        name_entry = {"unstructuredName": name_value, "metadata": {"primary": True}}
+        include_name = True
+        if resource_name and not (name_value and name_value.strip()):
+            include_name = False
+        if include_name:
+            body["names"] = [name_entry]
         phones = [normalize_phone(p) for p in data.get("phones", [])]
         phones = unique(phones)
         if phones:
@@ -362,8 +377,12 @@ async def upsert_contact_by_external_id(amo_contact_id: int, data: Dict[str, Any
 
         action = "update" if resource_name else "create"
         if resource_name:
+            if etag:
+                body["etag"] = etag
             update_url = f"{GOOGLE_API_BASE}/{resource_name}:updateContact"
-            update_params = {"updatePersonFields": "names,phoneNumbers,emailAddresses"}
+            update_params = {
+                "updatePersonFields": "names,phoneNumbers,emailAddresses,externalIds"
+            }
             resp = await _request(
                 "PATCH", update_url, params=update_params, headers=headers, json=body
             )
@@ -388,7 +407,12 @@ async def create_contact(data: Dict[str, Any]) -> Dict[str, Any]:
 
     headers["Content-Type"] = "application/json"
 
-    body: Dict[str, Any] = {"names": [{"displayName": data.get("name", "")}]}
+    name_value = data.get("name")
+    if not isinstance(name_value, str):
+        name_value = "" if name_value is None else str(name_value)
+    body: Dict[str, Any] = {
+        "names": [{"unstructuredName": name_value, "metadata": {"primary": True}}]
+    }
 
     external_id = data.get("external_id")
     if external_id is not None:
@@ -459,8 +483,12 @@ async def update_contact(resource_name: str, etag: str, data: Dict[str, Any]) ->
         update_fields: List[str] = []
         name = data.get("name")
         if name is not None:
-            body["names"] = [{"displayName": name}]
-            update_fields.append("names")
+            name_str = str(name)
+            if name_str.strip():
+                body["names"] = [
+                    {"unstructuredName": name_str, "metadata": {"primary": True}}
+                ]
+                update_fields.append("names")
         emails = data.get("emails")
         if emails is not None:
             body["emailAddresses"] = [{"value": e} for e in emails]
@@ -475,7 +503,9 @@ async def update_contact(resource_name: str, etag: str, data: Dict[str, Any]) ->
             update_fields.append("externalIds")
         if not update_fields:
             return {}
-        params = {"updatePersonFields": ",".join(update_fields)}
+        params = {
+            "updatePersonFields": "names,phoneNumbers,emailAddresses,externalIds"
+        }
         url = f"{GOOGLE_API_BASE}/{resource_name}:updateContact"
         resp = await _request("PATCH", url, params=params, headers=headers, json=body)
         return resp.json()
