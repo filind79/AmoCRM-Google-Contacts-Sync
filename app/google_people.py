@@ -480,7 +480,7 @@ async def update_contact(resource_name: str, etag: str, data: Dict[str, Any]) ->
         headers = await _token_headers(session)
         headers["Content-Type"] = "application/json"
         body: Dict[str, Any] = {"resourceName": resource_name, "etag": etag}
-        update_fields: List[str] = []
+        update_fields: set[str] = set()
         name = data.get("name")
         if name is not None:
             name_str = str(name)
@@ -488,24 +488,32 @@ async def update_contact(resource_name: str, etag: str, data: Dict[str, Any]) ->
                 body["names"] = [
                     {"unstructuredName": name_str, "metadata": {"primary": True}}
                 ]
-                update_fields.append("names")
+                update_fields.add("names")
         emails = data.get("emails")
         if emails is not None:
             body["emailAddresses"] = [{"value": e} for e in emails]
-            update_fields.append("emailAddresses")
+            update_fields.add("emailAddresses")
         phones = data.get("phones")
         if phones is not None:
             body["phoneNumbers"] = [{"value": p} for p in phones]
-            update_fields.append("phoneNumbers")
+            update_fields.add("phoneNumbers")
         external_id = data.get("external_id")
         if external_id is not None:
             body["externalIds"] = [{"value": str(external_id), "type": "AMOCRM"}]
-            update_fields.append("externalIds")
+            update_fields.add("externalIds")
         if not update_fields:
             return {}
-        params = {
-            "updatePersonFields": "names,phoneNumbers,emailAddresses,externalIds"
-        }
+        ordered_fields = [
+            field
+            for field in ("names", "phoneNumbers", "emailAddresses", "externalIds")
+            if field in update_fields
+        ]
+        if ordered_fields:
+            extra_fields = sorted(update_fields.difference(ordered_fields))
+            update_mask = ",".join([*ordered_fields, *extra_fields])
+        else:  # pragma: no cover - defensive, update_fields ensures this path isn't hit
+            update_mask = ""
+        params = {"updatePersonFields": update_mask}
         url = f"{GOOGLE_API_BASE}/{resource_name}:updateContact"
         resp = await _request("PATCH", url, params=params, headers=headers, json=body)
         return resp.json()
