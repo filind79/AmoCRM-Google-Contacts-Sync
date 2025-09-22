@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 import asyncio
 import httpx
 import random
+from typing import Any
 
 import pytest
 
@@ -12,6 +13,7 @@ from app.google_people import (
     _parse_update_time,
     _request,
     create_contact,
+    update_contact,
 )
 
 
@@ -135,6 +137,38 @@ async def test_create_contact_external_id(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_create_contact_uses_unstructured_name(monkeypatch):
+    captured: dict[str, Any] = {}
+
+    class DummySession:
+        def close(self):
+            return None
+
+    async def fake_headers(_session):
+        return {}
+
+    async def fake_request(method, url, **kwargs):
+        captured["method"] = method
+        captured["url"] = url
+        captured["json"] = kwargs.get("json")
+
+        class DummyResponse:
+            def json(self):
+                return {}
+
+        return DummyResponse()
+
+    monkeypatch.setattr("app.google_people.get_session", lambda: DummySession())
+    monkeypatch.setattr("app.google_people._token_headers", fake_headers)
+    monkeypatch.setattr("app.google_people._request", fake_request)
+
+    await create_contact({"name": "Имя из amoCRM"})
+
+    assert captured["json"]["names"][0]["unstructuredName"] == "Имя из amoCRM"
+    assert captured["json"]["names"][0]["metadata"]["primary"] is True
+
+
+@pytest.mark.asyncio
 async def test_create_contact_rate_limited(monkeypatch):
     class DummyAsyncClient:
         async def __aenter__(self):  # noqa: D401
@@ -185,3 +219,81 @@ async def test_create_contact_rate_limited_without_session_patch(monkeypatch):
 
     with pytest.raises(RateLimitError):
         await create_contact({"name": "x"})
+
+
+@pytest.mark.asyncio
+async def test_update_contact_uses_unstructured_name_and_etag(monkeypatch):
+    captured: dict[str, Any] = {}
+
+    class DummySession:
+        def close(self):
+            return None
+
+    async def fake_headers(_session):
+        return {}
+
+    async def fake_request(method, url, **kwargs):
+        captured["method"] = method
+        captured["url"] = url
+        captured["json"] = kwargs.get("json")
+        captured["params"] = kwargs.get("params")
+
+        class DummyResponse:
+            def json(self):
+                return {}
+
+        return DummyResponse()
+
+    monkeypatch.setattr("app.google_people.get_session", lambda: DummySession())
+    monkeypatch.setattr("app.google_people._token_headers", fake_headers)
+    monkeypatch.setattr("app.google_people._request", fake_request)
+
+    data = {
+        "name": "Имя из amoCRM",
+        "emails": ["test@example.com"],
+        "phones": ["+70000000000"],
+        "external_id": 42,
+    }
+
+    await update_contact("people/123", "etag-1", data)
+
+    assert captured["method"] == "PATCH"
+    assert captured["json"]["etag"] == "etag-1"
+    assert captured["json"]["names"][0]["unstructuredName"] == "Имя из amoCRM"
+    assert captured["json"]["names"][0]["metadata"]["primary"] is True
+    assert (
+        captured["params"]["updatePersonFields"]
+        == "names,phoneNumbers,emailAddresses,externalIds"
+    )
+
+
+@pytest.mark.asyncio
+async def test_update_contact_skips_empty_name(monkeypatch):
+    captured: dict[str, Any] = {}
+
+    class DummySession:
+        def close(self):
+            return None
+
+    async def fake_headers(_session):
+        return {}
+
+    async def fake_request(method, url, **kwargs):
+        captured["json"] = kwargs.get("json")
+
+        class DummyResponse:
+            def json(self):
+                return {}
+
+        return DummyResponse()
+
+    monkeypatch.setattr("app.google_people.get_session", lambda: DummySession())
+    monkeypatch.setattr("app.google_people._token_headers", fake_headers)
+    monkeypatch.setattr("app.google_people._request", fake_request)
+
+    data = {"name": "   ", "emails": ["new@example.com"], "external_id": 99}
+
+    await update_contact("people/321", "etag-2", data)
+
+    assert "names" not in captured["json"]
+    assert captured["json"]["emailAddresses"] == [{"value": "new@example.com"}]
