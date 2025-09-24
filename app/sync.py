@@ -21,6 +21,8 @@ async def fetch_amo_contacts(
     limit: int,
     since_days: Optional[int] = None,
     since_minutes: Optional[int] = None,
+    *,
+    amo_ids: Optional[List[int]] = None,
     stats: Optional[Dict[str, int]] = None,
 ) -> List[Dict[str, Any]]:
     token = settings.amo_long_lived_token
@@ -29,7 +31,10 @@ async def fetch_amo_contacts(
         raise HTTPException(status_code=500, detail="AmoCRM settings missing")
     url = f"{base_url}/api/v4/contacts"
     headers = {"Authorization": f"Bearer {token}"}
-    params = {"limit": limit}
+    request_limit = limit
+    if amo_ids:
+        request_limit = max(limit, len(amo_ids))
+    params: Dict[str, Any] = {"limit": request_limit}
     since: Optional[datetime] = None
     if since_minutes is not None:
         since = datetime.now(timezone.utc) - timedelta(minutes=since_minutes)
@@ -37,6 +42,8 @@ async def fetch_amo_contacts(
         since = datetime.now(timezone.utc) - timedelta(days=since_days)
     if since is not None:
         params["filter[updated_at][from]"] = since.isoformat().replace("+00:00", "Z")
+    if amo_ids:
+        params["filter[id]"] = amo_ids
     async with httpx.AsyncClient(timeout=20) as client:
         resp = await client.get(url, headers=headers, params=params)
     if stats is not None:
@@ -46,6 +53,12 @@ async def fetch_amo_contacts(
         raise HTTPException(status_code=502, detail=f"AmoCRM API error: {resp.text}")
     data = resp.json().get("_embedded", {}).get("contacts", [])
     items: List[Dict[str, Any]] = []
+    if amo_ids:
+        amo_ids_set = set(amo_ids)
+        data = [c for c in data if c.get("id") in amo_ids_set]
+        order = {amo_id: index for index, amo_id in enumerate(amo_ids)}
+        data.sort(key=lambda c: order.get(c.get("id"), len(order)))
+
     for c in data:
         parsed = amocrm.extract_name_and_fields(c)
         items.append(
@@ -56,6 +69,8 @@ async def fetch_amo_contacts(
                 "phones": parsed["phones"],
             }
         )
+        if len(items) >= limit:
+            break
     return items
 
 
@@ -278,8 +293,10 @@ def is_existing_in_google(amo_contact: Dict[str, Any], lookup: Dict[str, set[str
 
 async def apply_contacts_to_google(
     limit: int,
-    since_days: int,
+    since_days: Optional[int],
     since_minutes: Optional[int] = None,
+    *,
+    amo_ids: Optional[List[int]] = None,
 ) -> Dict[str, Any]:
     metrics: Dict[str, int] = {
         "google_requests": 0,
@@ -297,6 +314,7 @@ async def apply_contacts_to_google(
             limit,
             effective_since_days,
             since_minutes,
+            amo_ids=amo_ids,
             stats=metrics,
         )
     except Exception:
