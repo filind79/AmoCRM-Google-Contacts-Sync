@@ -17,7 +17,7 @@ def create(monkeypatch, secret: str | None = None):
 def test_apply_upserts(monkeypatch):
     from app import sync as sync_module
 
-    async def fake_fetch_amo(limit, since_days, since_minutes=None, stats=None):  # noqa: ARG001
+    async def fake_fetch_amo(limit, since_days, since_minutes=None, *, amo_ids=None, stats=None):  # noqa: ARG001
         return [
             {"id": 1, "name": "a", "emails": ["a@example.com"], "phones": []},
             {"id": 2, "name": "b", "emails": ["b@example.com"], "phones": []},
@@ -82,7 +82,7 @@ def test_apply_upserts(monkeypatch):
 def test_apply_missing_etag(monkeypatch):
     from app import sync as sync_module
 
-    async def fake_fetch_amo(limit, since_days, since_minutes=None, stats=None):  # noqa: ARG001
+    async def fake_fetch_amo(limit, since_days, since_minutes=None, *, amo_ids=None, stats=None):  # noqa: ARG001
         return [{"id": 1, "name": "a", "emails": ["a@example.com"], "phones": []}]
 
     async def fake_search(key):  # noqa: ARG001
@@ -125,7 +125,7 @@ def test_apply_missing_etag(monkeypatch):
 def test_apply_rate_limited(monkeypatch):
     from app import sync as sync_module
 
-    async def fake_fetch_amo(limit, since_days, since_minutes=None, stats=None):  # noqa: ARG001
+    async def fake_fetch_amo(limit, since_days, since_minutes=None, *, amo_ids=None, stats=None):  # noqa: ARG001
         return [
             {"id": 1, "name": "a", "emails": ["a@example.com"], "phones": []},
             {"id": 2, "name": "b", "emails": ["b@example.com"], "phones": []},
@@ -189,8 +189,10 @@ def test_apply_invalid_direction(monkeypatch):
 def test_apply_accepts_query_token(monkeypatch):
     from app.routes import sync as sync_routes
 
-    async def fake_apply(limit, since_days, since_minutes=None):  # noqa: ARG001
+    async def fake_apply(limit, since_days, since_minutes=None, *, amo_ids=None):  # noqa: ARG001
         assert since_minutes == 10
+        assert since_days is None
+        assert amo_ids is None
         return {"ok": True}
 
     monkeypatch.setattr(sync_routes, "apply_contacts_to_google", fake_apply)
@@ -204,10 +206,43 @@ def test_apply_accepts_query_token(monkeypatch):
         assert resp.json() == {"ok": True}
 
 
+def test_apply_parses_amo_ids(monkeypatch):
+    from app.routes import sync as sync_routes
+
+    captured: dict[str, object] = {}
+
+    async def fake_apply(limit, since_days, since_minutes=None, *, amo_ids=None):  # noqa: ARG001
+        captured["params"] = (limit, since_days, since_minutes, amo_ids)
+        return {"status": "ok"}
+
+    monkeypatch.setattr(sync_routes, "apply_contacts_to_google", fake_apply)
+
+    app = create(monkeypatch, "s")
+    with TestClient(app) as client:
+        resp = client.post(
+            "/sync/contacts/apply?direction=to_google&limit=5&confirm=1&amo_ids=1,2,3",
+            headers={"X-Debug-Secret": "s"},
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "ok"}
+        assert captured["params"] == (5, None, None, [1, 2, 3])
+
+
+def test_apply_rejects_invalid_amo_ids(monkeypatch):
+    app = create(monkeypatch, "s")
+    with TestClient(app) as client:
+        resp = client.post(
+            "/sync/contacts/apply?direction=to_google&limit=5&confirm=1&amo_ids=1,abc",
+            headers={"X-Debug-Secret": "s"},
+        )
+        assert resp.status_code == 400
+        assert resp.json() == {"detail": "Invalid amo_ids"}
+
+
 def test_apply_google_auth_error_to_401(monkeypatch):
     from app.routes import sync as sync_routes
 
-    async def fake_apply(limit, since_days, since_minutes=None):  # noqa: ARG001
+    async def fake_apply(limit, since_days, since_minutes=None, *, amo_ids=None):  # noqa: ARG001
         raise GoogleAuthError("no_token")
 
     monkeypatch.setattr(sync_routes, "apply_contacts_to_google", fake_apply)
@@ -228,7 +263,7 @@ def test_apply_google_auth_error_to_401(monkeypatch):
 def test_apply_generic_error_to_502(monkeypatch):
     from app.routes import sync as sync_routes
 
-    async def fake_apply(limit, since_days, since_minutes=None):  # noqa: ARG001
+    async def fake_apply(limit, since_days, since_minutes=None, *, amo_ids=None):  # noqa: ARG001
         raise RuntimeError("boom")
 
     monkeypatch.setattr(sync_routes, "apply_contacts_to_google", fake_apply)
@@ -246,7 +281,7 @@ def test_apply_generic_error_to_502(monkeypatch):
 def test_apply_success_passthrough(monkeypatch):
     from app.routes import sync as sync_routes
 
-    async def fake_apply(limit, since_days, since_minutes=None):  # noqa: ARG001
+    async def fake_apply(limit, since_days, since_minutes=None, *, amo_ids=None):  # noqa: ARG001
         return {"status": "ok", "created": 3, "skipped": 2}
 
     monkeypatch.setattr(sync_routes, "apply_contacts_to_google", fake_apply)
@@ -264,7 +299,7 @@ def test_apply_success_passthrough(monkeypatch):
 def test_apply_skips_none_custom_fields_contacts_no_crash(monkeypatch):
     from app import sync as sync_module
 
-    async def fake_fetch(limit, since_days, since_minutes=None, stats=None):  # noqa: ARG001
+    async def fake_fetch(limit, since_days, since_minutes=None, *, amo_ids=None, stats=None):  # noqa: ARG001
         raw = [{"id": 1, "name": "", "custom_fields_values": None}]
         parsed = []
         for c in raw:

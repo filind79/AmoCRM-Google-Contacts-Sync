@@ -32,7 +32,7 @@ def test_dry_run_no_token(monkeypatch):
     sess.commit()
     sess.close()
 
-    async def fake_fetch_amo(limit, since_days=None, since_minutes=None, stats=None):  # noqa: ARG001
+    async def fake_fetch_amo(limit, since_days=None, since_minutes=None, *, amo_ids=None, stats=None):  # noqa: ARG001
         return []
 
     monkeypatch.setattr(sync_route, "fetch_amo_contacts", fake_fetch_amo)
@@ -62,7 +62,7 @@ def test_dry_run_ok(monkeypatch):
             {"requests": 1, "considered": 1, "found": 0},
         )
 
-    async def fake_fetch_amo(limit, since_days=None, since_minutes=None, stats=None):  # noqa: ARG001
+    async def fake_fetch_amo(limit, since_days=None, since_minutes=None, *, amo_ids=None, stats=None):  # noqa: ARG001
         return [{"id": 1, "name": "a", "emails": ["a@ex.com"], "phones": []}]
 
     monkeypatch.setattr(sync_route, "fetch_google_contacts", fake_fetch_google)
@@ -86,7 +86,7 @@ def test_dry_run_ok(monkeypatch):
 def test_dry_run_direction_amo(monkeypatch):
     from app.routes import sync as sync_route
 
-    async def fake_fetch_amo(limit, since_days=None, since_minutes=None, stats=None):  # noqa: ARG001
+    async def fake_fetch_amo(limit, since_days=None, since_minutes=None, *, amo_ids=None, stats=None):  # noqa: ARG001
         return [{"id": 1, "name": "a", "emails": ["a@ex.com"], "phones": []}]
 
     async def fake_fetch_google(
@@ -135,7 +135,7 @@ def test_dry_run_direction_google(monkeypatch):
             {"requests": 1, "considered": 1, "found": 0},
         )
 
-    async def fake_fetch_amo(limit, since_days=None, since_minutes=None, stats=None):  # noqa: ARG001
+    async def fake_fetch_amo(limit, since_days=None, since_minutes=None, *, amo_ids=None, stats=None):  # noqa: ARG001
         return []
 
     monkeypatch.setattr(sync_route, "fetch_google_contacts", fake_fetch_google)
@@ -175,7 +175,7 @@ def test_dry_run_since_days(monkeypatch):
     async def fake_search_contacts(query, counters=None):  # noqa: ARG001
         return []
 
-    async def fake_fetch_amo(limit, since_days=None, since_minutes=None, stats=None):  # noqa: ARG001
+    async def fake_fetch_amo(limit, since_days=None, since_minutes=None, *, amo_ids=None, stats=None):  # noqa: ARG001
         return []
 
     monkeypatch.setattr(google_people, "list_contacts", fake_list_contacts)
@@ -207,7 +207,7 @@ def test_dry_run_limit_clamped(monkeypatch):
     ):  # noqa: ARG001
         return ([], {"requests": 0, "considered": 0, "found": 0})
 
-    async def fake_fetch_amo(limit, since_days=None, since_minutes=None, stats=None):  # noqa: ARG001
+    async def fake_fetch_amo(limit, since_days=None, since_minutes=None, *, amo_ids=None, stats=None):  # noqa: ARG001
         if stats is not None:
             stats["amo_requests"] = stats.get("amo_requests", 0) + 1
             stats["pages_amo"] = stats.get("pages_amo", 0) + 1
@@ -231,7 +231,7 @@ def test_dry_run_since_minutes(monkeypatch):
 
     observed: dict[str, int | None] = {}
 
-    async def fake_fetch_amo(limit, since_days=None, since_minutes=None, stats=None):  # noqa: ARG001
+    async def fake_fetch_amo(limit, since_days=None, since_minutes=None, *, amo_ids=None, stats=None):  # noqa: ARG001
         observed["since_days"] = since_days
         observed["since_minutes"] = since_minutes
         return []
@@ -263,7 +263,7 @@ def test_dry_run_fast_both_partial_timeout(monkeypatch):
     ):  # noqa: ARG001
         raise asyncio.TimeoutError
 
-    async def fake_fetch_amo(limit, since_days=None, since_minutes=None, stats=None):  # noqa: ARG001
+    async def fake_fetch_amo(limit, since_days=None, since_minutes=None, *, amo_ids=None, stats=None):  # noqa: ARG001
         return [{"id": 1, "name": "a", "emails": ["a@ex.com"], "phones": []}]
 
     monkeypatch.setattr(sync_route, "fetch_google_contacts", fake_fetch_google)

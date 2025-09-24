@@ -89,6 +89,13 @@ Only `direction=to_google` is supported today. The response includes the same
 diagnostic counters (`duration_ms`, `google_requests`, `amo_requests`,
 `retries`, `rate_limit_hits`, `pages_*`) alongside the existing summary.
 
+Supported filters:
+
+- `amo_ids=ID1,ID2,...` – limit the sync to specific Amo contacts.
+- `since_minutes` / `since_days` – behave the same way as in `dry-run` and can
+  be combined with `amo_ids`. Filtering is applied before the final `limit` is
+  enforced.
+
 For safe manual testing prefer small batches and pauses between runs, e.g.:
 
 ```bash

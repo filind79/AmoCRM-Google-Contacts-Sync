@@ -238,8 +238,9 @@ async def contacts_dry_run(
 @router.post("/contacts/apply")
 async def contacts_apply(
     limit: int = Query(5, ge=1, le=50),
-    since_days: int = Query(30, ge=1),
+    since_days: int | None = Query(None, ge=1),
     since_minutes: int | None = Query(None, ge=1),
+    amo_ids: str | None = Query(None),
     direction: str = Query("to_google"),
     confirm: int | None = Query(None),
     x_debug_secret: str | None = Header(None, alias="X-Debug-Secret"),
@@ -251,8 +252,21 @@ async def contacts_apply(
         raise HTTPException(status_code=403)
     if direction != "to_google":
         raise HTTPException(status_code=400, detail="Invalid direction")
+    parsed_amo_ids: list[int] | None = None
+    if amo_ids:
+        try:
+            parsed_amo_ids = [int(part.strip()) for part in amo_ids.split(",") if part.strip()]
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid amo_ids") from None
+        if not parsed_amo_ids:
+            parsed_amo_ids = None
     try:
-        return await apply_contacts_to_google(limit, since_days, since_minutes)
+        return await apply_contacts_to_google(
+            limit,
+            since_days,
+            since_minutes,
+            amo_ids=parsed_amo_ids,
+        )
     except GoogleRateLimitError as e:
         from fastapi.responses import JSONResponse
 
