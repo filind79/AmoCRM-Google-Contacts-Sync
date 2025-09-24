@@ -77,6 +77,8 @@ def test_apply_upserts(monkeypatch):
         assert creates == [3]
         assert [u[0] for u in updates] == ["people/1"]
         assert updates[0][1] == "e1"
+        skip_sample = data["samples"]["skip_existing"][0]
+        assert skip_sample["reason"] == ["name", "phones", "emails"]
 
 
 def test_apply_missing_etag(monkeypatch):
