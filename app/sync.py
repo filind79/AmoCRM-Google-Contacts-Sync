@@ -393,6 +393,14 @@ async def apply_contacts_to_google(
                             updated_samples.append(sample)
                     else:
                         skip_existing += 1
+                        reason: List[str] = []
+                        if not need_name:
+                            reason.append("name")
+                        if not missing_phones:
+                            reason.append("phones")
+                        if not missing_emails:
+                            reason.append("emails")
+                        sample["reason"] = reason
                         if len(skipped_samples) < 5:
                             skipped_samples.append(sample)
                 else:
