@@ -12,8 +12,11 @@ from app.config import settings
 from app.google_auth import GoogleAuthError, get_valid_google_access_token
 from app.google_people import GOOGLE_API_BASE
 from app.storage import Token, get_session, get_token
+from app.webhooks import get_recent_webhook_events
 
 router = APIRouter()
+
+_ACCEPTED_WEBHOOK_AUTH = ("X-Webhook-Secret", "X-Debug-Secret", "?token")
 
 
 def require_debug_secret(
@@ -252,3 +255,11 @@ async def ping_google(_=Depends(require_debug_secret)) -> dict[str, object]:
     if error_reason:
         response["error_reason"] = error_reason
     return response
+
+
+@router.get("/webhook")
+def debug_webhook(_=Depends(require_debug_secret)) -> dict[str, object]:
+    return {
+        "accepted_auth": list(_ACCEPTED_WEBHOOK_AUTH),
+        "last_events": get_recent_webhook_events(),
+    }
