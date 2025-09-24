@@ -7,6 +7,7 @@ from app.backfill import router as backfill_router
 from app.config import settings
 from app.debug import router as debug_router
 from app.routes.sync import router as sync_router
+from app.pending_sync_worker import pending_sync_worker
 from app.storage import init_db
 from app.webhooks import router as webhook_router
 
@@ -17,12 +18,17 @@ def create_app() -> FastAPI:
     app = FastAPI()
 
     @app.on_event("startup")
-    def _startup() -> None:
+    async def _startup() -> None:
         init_db()
+        pending_sync_worker.start()
         if settings.debug_secret:
             logger.info("Debug router enabled on /debug")
         else:
             logger.info("Debug router mounted but inactive (no DEBUG_SECRET)")
+
+    @app.on_event("shutdown")
+    async def _shutdown() -> None:
+        await pending_sync_worker.stop()
 
     @app.get("/health")
     async def health() -> dict[str, str]:

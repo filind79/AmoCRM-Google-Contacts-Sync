@@ -65,6 +65,18 @@ class Token(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class PendingSync(Base):
+    __tablename__ = "pending_sync"
+
+    id = Column(Integer, primary_key=True)
+    amo_contact_id = Column(Integer, nullable=False, unique=True, index=True)
+    attempts = Column(Integer, nullable=False, default=0)
+    next_attempt_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    last_error = Column(String(255), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 def get_token(session, system: str) -> Optional[Token]:
     stmt = select(Token).where(Token.system == system)
     return session.execute(stmt).scalars().first()
@@ -112,3 +124,37 @@ def save_link(session, amo_contact_id: str, google_resource_name: str) -> Link:
     session.commit()
     session.refresh(link)
     return link
+
+
+def get_pending_sync(session, amo_contact_id: int) -> Optional[PendingSync]:
+    stmt = select(PendingSync).where(PendingSync.amo_contact_id == amo_contact_id)
+    return session.execute(stmt).scalars().first()
+
+
+def enqueue_pending_sync(session, amo_contact_id: int) -> PendingSync:
+    record = get_pending_sync(session, amo_contact_id)
+    now = datetime.utcnow()
+    if record:
+        record.attempts = 0
+        record.next_attempt_at = now
+        record.last_error = None
+        record.updated_at = now
+    else:
+        record = PendingSync(
+            amo_contact_id=amo_contact_id,
+            next_attempt_at=now,
+        )
+        session.add(record)
+    session.commit()
+    session.refresh(record)
+    return record
+
+
+def fetch_due_pending_sync(session, limit: int) -> list[PendingSync]:
+    stmt = (
+        select(PendingSync)
+        .where(PendingSync.next_attempt_at <= datetime.utcnow())
+        .order_by(PendingSync.next_attempt_at, PendingSync.id)
+        .limit(limit)
+    )
+    return session.execute(stmt).scalars().all()

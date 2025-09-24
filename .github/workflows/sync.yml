@@ -1,0 +1,26 @@
+name: Scheduled Google Sync
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    env:
+      SYNC_BASE_URL: ${{ secrets.SYNC_BASE_URL }}
+      SYNC_DEBUG_SECRET: ${{ secrets.SYNC_DEBUG_SECRET }}
+    steps:
+      - name: Run synchronization
+        run: |
+          if [ -z "$SYNC_BASE_URL" ]; then
+            echo "SYNC_BASE_URL secret is not configured" >&2
+            exit 1
+          fi
+          if [ -z "$SYNC_DEBUG_SECRET" ]; then
+            echo "SYNC_DEBUG_SECRET secret is not configured" >&2
+            exit 1
+          fi
+          curl -sSf -X POST -H "X-Debug-Secret: $SYNC_DEBUG_SECRET" \
+            "$SYNC_BASE_URL/sync/contacts/apply?direction=to_google&since_minutes=15&limit=20&mode=fast&confirm=1"

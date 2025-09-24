@@ -38,6 +38,7 @@ async def contacts_dry_run(
     limit: int = Query(50, ge=1, le=500),
     direction: str = Query("both"),
     since_days: int | None = Query(None, ge=1),
+    since_minutes: int | None = Query(None, ge=1),
     mode: str = Query("fast"),
 ) -> dict[str, object]:
     direction = _validate_direction(direction)
@@ -45,6 +46,7 @@ async def contacts_dry_run(
         raise HTTPException(status_code=400, detail="Invalid mode")
 
     effective_limit, limit_clamped = _calculate_effective_limit(limit, direction, mode)
+    effective_since_days = None if since_minutes is not None else since_days
 
     metrics: dict[str, int] = {
         "google_requests": 0,
@@ -73,12 +75,18 @@ async def contacts_dry_run(
             amo_contacts: list[dict[str, object]] = []
             google_contacts: list[dict[str, object]] = []
             amo_task = asyncio.create_task(
-                fetch_amo_contacts(effective_limit, since_days, stats=metrics)
+                fetch_amo_contacts(
+                    effective_limit,
+                    effective_since_days,
+                    since_minutes,
+                    stats=metrics,
+                )
             )
             google_task = asyncio.create_task(
                 fetch_google_contacts(
                     effective_limit,
-                    since_days,
+                    effective_since_days,
+                    since_minutes,
                     None,
                     list_existing=True,
                     mode=mode,
@@ -144,7 +152,12 @@ async def contacts_dry_run(
         else:
             try:
                 amo_contacts = (
-                    await fetch_amo_contacts(effective_limit, since_days, stats=metrics)
+                    await fetch_amo_contacts(
+                        effective_limit,
+                        effective_since_days,
+                        since_minutes,
+                        stats=metrics,
+                    )
                     if direction in {"both", "amo"}
                     else []
                 )
@@ -153,7 +166,8 @@ async def contacts_dry_run(
             try:
                 google_contacts, counters = await fetch_google_contacts(
                     effective_limit,
-                    since_days,
+                    effective_since_days,
+                    since_minutes,
                     amo_contacts if direction in {"both", "amo"} else None,
                     list_existing=direction in {"both", "google"},
                     mode=mode,
@@ -225,16 +239,20 @@ async def contacts_dry_run(
 async def contacts_apply(
     limit: int = Query(5, ge=1, le=50),
     since_days: int = Query(30, ge=1),
+    since_minutes: int | None = Query(None, ge=1),
     direction: str = Query("to_google"),
     confirm: int | None = Query(None),
     x_debug_secret: str | None = Header(None, alias="X-Debug-Secret"),
+    token: str | None = Query(None),
 ) -> dict[str, object]:
-    if x_debug_secret != settings.debug_secret or confirm != 1:
+    provided_secret = x_debug_secret or token
+    secret = settings.debug_secret
+    if not secret or provided_secret != secret or confirm != 1:
         raise HTTPException(status_code=403)
     if direction != "to_google":
         raise HTTPException(status_code=400, detail="Invalid direction")
     try:
-        return await apply_contacts_to_google(limit, since_days)
+        return await apply_contacts_to_google(limit, since_days, since_minutes)
     except GoogleRateLimitError as e:
         from fastapi.responses import JSONResponse
 
