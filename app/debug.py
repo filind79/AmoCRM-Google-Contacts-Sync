@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 
 import httpx
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from sqlalchemy import select
 
 from app.config import settings
@@ -16,9 +16,13 @@ from app.storage import Token, get_session, get_token
 router = APIRouter()
 
 
-def require_debug_secret(x_debug_secret: str | None = Header(None, alias="X-Debug-Secret")) -> None:
+def require_debug_secret(
+    x_debug_secret: str | None = Header(None, alias="X-Debug-Secret"),
+    token: str | None = Query(None),
+) -> None:
     secret = settings.debug_secret
-    if not secret or x_debug_secret != secret:
+    provided = x_debug_secret or token
+    if not secret or provided != secret:
         raise HTTPException(status_code=404)
 
 
@@ -150,6 +154,8 @@ async def ping_google(_=Depends(require_debug_secret)) -> dict[str, object]:
     access_token: str | None = None
     token = get_token(session, "google")
     token_scopes = _scope_set(token.scopes if token else None)
+    scopes_list = sorted(token_scopes)
+    token_expires_at = token.expiry.isoformat() if token and token.expiry else None
     if required_scopes:
         scopes_ok = bool(token) and required_scopes.issubset(token_scopes)
     else:
@@ -162,6 +168,11 @@ async def ping_google(_=Depends(require_debug_secret)) -> dict[str, object]:
             status = _AUTH_ERROR_STATUS.get(exc.reason, 503)
             response = _base_response(False, latency_ms, status, scopes_ok)
             response["error"] = exc.reason
+            response["error_reason"] = exc.reason
+            response["scopes"] = scopes_list
+            response["token_expires_at"] = token_expires_at
+            response["can_read_connections"] = False
+            response["can_write_contact"] = False
             return response
     finally:
         session.close()
@@ -169,26 +180,75 @@ async def ping_google(_=Depends(require_debug_secret)) -> dict[str, object]:
     headers = {"Authorization": f"Bearer {access_token}"}
     params = {"personFields": "metadata", "pageSize": 1}
     url = f"{GOOGLE_API_BASE}/people/me/connections"
+    can_read_connections = False
+    can_write_contact = False
+    error_reason: str | None = None
+    write_error: str | None = None
+    write_status: int | None = None
     try:
         async with httpx.AsyncClient(timeout=5) as client:
             resp = await client.get(url, headers=headers, params=params)
+            status_code = resp.status_code
+            if status_code in (401, 403):
+                scopes_ok = False
+                error_reason = f"http_{status_code}"
+            retry_after = _parse_retry_after(resp) if status_code == 429 else None
+
+            if status_code != 200:
+                latency_ms = _elapsed_ms(start)
+                response = _base_response(False, latency_ms, status_code, scopes_ok)
+                response["error"] = _extract_error(resp)
+                if retry_after is not None:
+                    response["retry_after"] = retry_after
+                if error_reason:
+                    response["error_reason"] = error_reason
+                response["scopes"] = scopes_list
+                response["token_expires_at"] = token_expires_at
+                response["can_read_connections"] = False
+                response["can_write_contact"] = False
+                return response
+
+            can_read_connections = True
+            validate_headers = dict(headers)
+            validate_headers["Content-Type"] = "application/json"
+            validate_headers["X-Goog-Validate-Only"] = "true"
+            validate_body = {"names": [{"givenName": "Ping"}]}
+            write_resp = await client.post(
+                f"{GOOGLE_API_BASE}/people:createContact",
+                headers=validate_headers,
+                json=validate_body,
+            )
+            write_status = write_resp.status_code
+            if write_status == 200:
+                can_write_contact = True
+            else:
+                can_write_contact = False
+                write_error = _extract_error(write_resp)
+                if write_status in (401, 403):
+                    scopes_ok = False
+                    error_reason = error_reason or f"http_{write_status}"
     except httpx.RequestError as exc:
         latency_ms = _elapsed_ms(start)
         response = _base_response(False, latency_ms, 503, scopes_ok)
         response["error"] = str(exc)
+        if error_reason:
+            response["error_reason"] = error_reason
+        response["scopes"] = scopes_list
+        response["token_expires_at"] = token_expires_at
+        response["can_read_connections"] = can_read_connections
+        response["can_write_contact"] = can_write_contact
         return response
 
     latency_ms = _elapsed_ms(start)
-    status_code = resp.status_code
-    if status_code in (401, 403):
-        scopes_ok = False
-    retry_after = _parse_retry_after(resp) if status_code == 429 else None
-
-    if status_code != 200:
-        response = _base_response(False, latency_ms, status_code, scopes_ok)
-        response["error"] = _extract_error(resp)
-        if retry_after is not None:
-            response["retry_after"] = retry_after
-        return response
-
-    return _base_response(True, latency_ms, status_code, scopes_ok)
+    status_value = write_status if write_status is not None else 200
+    ok = can_read_connections and can_write_contact
+    response = _base_response(ok, latency_ms, status_value, scopes_ok)
+    response["scopes"] = scopes_list
+    response["token_expires_at"] = token_expires_at
+    response["can_read_connections"] = can_read_connections
+    response["can_write_contact"] = can_write_contact
+    if write_error:
+        response["error"] = write_error
+    if error_reason:
+        response["error_reason"] = error_reason
+    return response

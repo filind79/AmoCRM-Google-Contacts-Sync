@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 async def fetch_amo_contacts(
     limit: int,
     since_days: Optional[int] = None,
+    since_minutes: Optional[int] = None,
     stats: Optional[Dict[str, int]] = None,
 ) -> List[Dict[str, Any]]:
     token = settings.amo_long_lived_token
@@ -29,8 +30,12 @@ async def fetch_amo_contacts(
     url = f"{base_url}/api/v4/contacts"
     headers = {"Authorization": f"Bearer {token}"}
     params = {"limit": limit}
-    if since_days is not None:
+    since: Optional[datetime] = None
+    if since_minutes is not None:
+        since = datetime.now(timezone.utc) - timedelta(minutes=since_minutes)
+    elif since_days is not None:
         since = datetime.now(timezone.utc) - timedelta(days=since_days)
+    if since is not None:
         params["filter[updated_at][from]"] = since.isoformat().replace("+00:00", "Z")
     async with httpx.AsyncClient(timeout=20) as client:
         resp = await client.get(url, headers=headers, params=params)
@@ -57,6 +62,7 @@ async def fetch_amo_contacts(
 async def fetch_google_contacts(
     limit: int,
     since_days: Optional[int] = None,
+    since_minutes: Optional[int] = None,
     amo_contacts: Optional[List[Dict[str, Any]]] = None,
     list_existing: bool = True,
     *,
@@ -65,11 +71,11 @@ async def fetch_google_contacts(
 ) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
     counters: Dict[str, int] = {"requests": 0, "considered": 0, "found": 0, "pages": 0}
     contacts_map: Dict[str, Dict[str, Any]] = {}
-    cutoff = (
-        datetime.now(timezone.utc) - timedelta(days=since_days)
-        if since_days is not None
-        else None
-    )
+    cutoff: Optional[datetime] = None
+    if since_minutes is not None:
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=since_minutes)
+    elif since_days is not None:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=since_days)
 
     fast_mode = mode == "fast"
 
@@ -77,6 +83,7 @@ async def fetch_google_contacts(
         listed = await google_people.list_contacts(
             limit,
             since_days,
+            since_minutes,
             counters,
             fast=fast_mode,
         )
@@ -269,7 +276,11 @@ def is_existing_in_google(amo_contact: Dict[str, Any], lookup: Dict[str, set[str
     return False
 
 
-async def apply_contacts_to_google(limit: int, since_days: int) -> Dict[str, Any]:
+async def apply_contacts_to_google(
+    limit: int,
+    since_days: int,
+    since_minutes: Optional[int] = None,
+) -> Dict[str, Any]:
     metrics: Dict[str, int] = {
         "google_requests": 0,
         "amo_requests": 0,
@@ -281,7 +292,13 @@ async def apply_contacts_to_google(limit: int, since_days: int) -> Dict[str, Any
     token = google_people.bind_metrics(metrics)
     started = time.perf_counter()
     try:
-        amo_contacts = await fetch_amo_contacts(limit, since_days, stats=metrics)
+        effective_since_days = None if since_minutes is not None else since_days
+        amo_contacts = await fetch_amo_contacts(
+            limit,
+            effective_since_days,
+            since_minutes,
+            stats=metrics,
+        )
     except Exception:
         google_people.reset_metrics(token)
         raise

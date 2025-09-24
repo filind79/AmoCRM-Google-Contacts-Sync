@@ -19,6 +19,7 @@ class Settings:
     google_redirect_uri: str = os.getenv("GOOGLE_REDIRECT_URI", "http://localhost:8000/oauth/google/callback")
 
     webhook_shared_secret: str = os.getenv("WEBHOOK_SHARED_SECRET", "")
+    webhook_secret: str = os.getenv("WEBHOOK_SECRET", os.getenv("WEBHOOK_SHARED_SECRET", ""))
     debug_secret: str = os.getenv("DEBUG_SECRET", "")
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
 

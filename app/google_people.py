@@ -29,7 +29,7 @@ from app.google_auth import (
     get_valid_google_access_token,
 )
 from app.storage import get_session
-from app.utils import normalize_email, normalize_phone, unique
+from app.utils import normalize_email, normalize_phone, parse_display_name, unique
 
 
 GOOGLE_API_BASE = "https://people.googleapis.com/v1"
@@ -208,6 +208,7 @@ def _parse_update_time(person: Dict[str, Any]) -> Optional[datetime]:
 async def list_contacts(
     limit: int,
     since_days: Optional[int] = None,
+    since_minutes: Optional[int] = None,
     counters: Optional[Dict[str, int]] = None,
     *,
     fast: bool = False,
@@ -220,11 +221,11 @@ async def list_contacts(
         url = f"{GOOGLE_API_BASE}/people/me/connections"
         collected: List[Contact] = []
         page_token: Optional[str] = None
-        cutoff = (
-            datetime.now(timezone.utc) - timedelta(days=since_days)
-            if since_days is not None
-            else None
-        )
+        cutoff: Optional[datetime] = None
+        if since_minutes is not None:
+            cutoff = datetime.now(timezone.utc) - timedelta(minutes=since_minutes)
+        elif since_days is not None:
+            cutoff = datetime.now(timezone.utc) - timedelta(days=since_days)
         while len(collected) < limit:
             remaining = limit if fast else max(1, limit - len(collected))
             params: Dict[str, Any] = {
@@ -357,14 +358,20 @@ async def upsert_contact_by_external_id(amo_contact_id: int, data: Dict[str, Any
 
         etag = person.get("etag")
         body: Dict[str, Any] = {"externalIds": [external_id]}
-        name_value = data.get("name")
-        if not isinstance(name_value, str):
-            name_value = "" if name_value is None else str(name_value)
-        name_entry = {"unstructuredName": name_value, "metadata": {"primary": True}}
+        display_name, given_name, family_name = parse_display_name(data.get("name"))
         include_name = True
-        if resource_name and not (name_value and name_value.strip()):
+        if resource_name and not display_name:
             include_name = False
-        if include_name:
+        if include_name and display_name:
+            name_entry: Dict[str, Any] = {
+                "metadata": {"primary": True},
+                "displayName": display_name,
+                "unstructuredName": display_name,
+            }
+            if given_name:
+                name_entry["givenName"] = given_name
+            if family_name:
+                name_entry["familyName"] = family_name
             body["names"] = [name_entry]
         phones = [normalize_phone(p) for p in data.get("phones", [])]
         phones = unique(phones)
@@ -407,12 +414,19 @@ async def create_contact(data: Dict[str, Any]) -> Dict[str, Any]:
 
     headers["Content-Type"] = "application/json"
 
-    name_value = data.get("name")
-    if not isinstance(name_value, str):
-        name_value = "" if name_value is None else str(name_value)
-    body: Dict[str, Any] = {
-        "names": [{"unstructuredName": name_value, "metadata": {"primary": True}}]
-    }
+    display_name, given_name, family_name = parse_display_name(data.get("name"))
+    body: Dict[str, Any] = {}
+    if display_name:
+        name_entry: Dict[str, Any] = {
+            "metadata": {"primary": True},
+            "displayName": display_name,
+            "unstructuredName": display_name,
+        }
+        if given_name:
+            name_entry["givenName"] = given_name
+        if family_name:
+            name_entry["familyName"] = family_name
+        body["names"] = [name_entry]
 
     external_id = data.get("external_id")
     if external_id is not None:
@@ -483,11 +497,18 @@ async def update_contact(resource_name: str, etag: str, data: Dict[str, Any]) ->
         update_fields: set[str] = set()
         name = data.get("name")
         if name is not None:
-            name_str = str(name)
-            if name_str.strip():
-                body["names"] = [
-                    {"unstructuredName": name_str, "metadata": {"primary": True}}
-                ]
+            display_name, given_name, family_name = parse_display_name(name)
+            if display_name:
+                name_entry: Dict[str, Any] = {
+                    "metadata": {"primary": True},
+                    "displayName": display_name,
+                    "unstructuredName": display_name,
+                }
+                if given_name:
+                    name_entry["givenName"] = given_name
+                if family_name:
+                    name_entry["familyName"] = family_name
+                body["names"] = [name_entry]
                 update_fields.add("names")
         emails = data.get("emails")
         if emails is not None:
