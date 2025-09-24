@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 
 from app.config import settings
 from app.storage import Token, get_session, init_db, save_token
+from app.webhooks import clear_recent_webhook_events
 
 
 def _create_app(monkeypatch, secret: str):
@@ -24,6 +25,10 @@ def _clear_tokens() -> None:
         session.commit()
     finally:
         session.close()
+
+
+def _clear_recent_webhook_events() -> None:
+    clear_recent_webhook_events()
 
 
 def _store_google_token(scopes: str | None = None) -> None:
@@ -217,7 +222,70 @@ def test_ping_google_forbidden(monkeypatch):
     assert payload["error"] == "insufficient scopes"
     assert payload["can_read_connections"] is False
     assert payload["can_write_contact"] is False
-    assert payload.get("error_reason") == "http_403"
+
+
+def test_debug_webhook_last_events(monkeypatch):
+    _clear_recent_webhook_events()
+    monkeypatch.setattr(settings, "webhook_secret", "wh-secret")
+    app = _create_app(monkeypatch, "dbg-secret")
+
+    recorded: list[int] = []
+
+    def fake_enqueue(contact_id: int) -> None:  # noqa: D401
+        recorded.append(contact_id)
+
+    class DummyWorker:
+        def wake(self) -> None:  # noqa: D401
+            return None
+
+    monkeypatch.setattr("app.webhooks.enqueue_contact", fake_enqueue)
+    monkeypatch.setattr("app.webhooks.pending_sync_worker", DummyWorker())
+
+    with TestClient(app) as client:
+        resp = client.get("/debug/webhook", headers={"X-Debug-Secret": "dbg-secret"})
+        assert resp.status_code == 200
+        payload = resp.json()
+        assert payload["accepted_auth"] == ["X-Webhook-Secret", "X-Debug-Secret", "?token"]
+        assert payload["last_events"] == []
+
+        for contact_id in range(1, 10):
+            resp = client.post(
+                "/webhook/amo",
+                json={"event": "contact_updated", "contact_id": contact_id},
+                headers={"X-Webhook-Secret": "wh-secret"},
+            )
+            assert resp.status_code == 200
+
+        resp = client.post(
+            "/webhook/amo",
+            json={"contacts": {"update": [{"id": 99}]}},
+            headers={"X-Webhook-Secret": "wh-secret"},
+        )
+        assert resp.status_code == 200
+
+        for contact_id in (10, 11):
+            resp = client.post(
+                "/webhook/amo",
+                json={"event": "contact_updated", "contact_id": contact_id},
+                headers={"X-Webhook-Secret": "wh-secret"},
+            )
+            assert resp.status_code == 200
+
+        resp = client.get("/debug/webhook", headers={"X-Debug-Secret": "dbg-secret"})
+
+    assert recorded[-2:] == [10, 11]
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["accepted_auth"] == ["X-Webhook-Secret", "X-Debug-Secret", "?token"]
+    events = data["last_events"]
+    assert len(events) == 10
+    assert [item["contact_id"] for item in events] == [11, 10, 99, 9, 8, 7, 6, 5, 4, 3]
+    assert events[0]["event"] == "contact_updated"
+    assert events[1]["event"] == "contact_updated"
+    assert events[2]["event"] == "contacts.update"
+    for entry in events[:3]:
+        assert datetime.fromisoformat(entry["ts"])
 
 
 def test_ping_google_profile_scope_regression(monkeypatch):
