@@ -10,16 +10,22 @@ from app.storage import PendingSync, get_session, init_db
 @pytest.mark.asyncio
 async def test_webhook_requires_secret(monkeypatch):
     monkeypatch.setattr(settings, "webhook_secret", "secret")
+    monkeypatch.setattr(settings, "debug_secret", "debug")
     app = create_app()
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.post("/webhook/amo", json={"contact_id": 1})
         assert resp.status_code == 401
+        assert resp.json() == {
+            "detail": "Unauthorized",
+            "accepted": ["X-Webhook-Secret", "X-Debug-Secret", "?token"],
+        }
 
 
 @pytest.mark.asyncio
 async def test_webhook_enqueues_and_processes(monkeypatch):
     monkeypatch.setattr(settings, "webhook_secret", "secret")
+    monkeypatch.setattr(settings, "debug_secret", "")
     init_db()
     session = get_session()
     try:
@@ -71,6 +77,7 @@ async def test_webhook_enqueues_and_processes(monkeypatch):
 @pytest.mark.asyncio
 async def test_webhook_supports_legacy_payload(monkeypatch):
     monkeypatch.setattr(settings, "webhook_secret", "secret")
+    monkeypatch.setattr(settings, "debug_secret", "")
 
     collected: list[int] = []
 
@@ -93,10 +100,27 @@ async def test_webhook_supports_legacy_payload(monkeypatch):
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.post(
             "/webhook/amo?token=secret",
-            json={"contacts": {"update": [{"id": 5}, {"id": "6"}]}}
+            json={"contacts": {"update": [{"id": 5}, {"id": "6"}]}},
         )
         assert resp.status_code == 200
         assert set(resp.json()["queued"]) == {5, 6}
         await pending_sync_worker.drain()
 
     assert set(collected) == {5, 6}
+
+
+@pytest.mark.asyncio
+async def test_webhook_accepts_debug_secret(monkeypatch):
+    monkeypatch.setattr(settings, "webhook_secret", "secret")
+    monkeypatch.setattr(settings, "debug_secret", "debug")
+
+    app = create_app()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/webhook/amo",
+            json={"event": "contact_updated", "contact_id": 321},
+            headers={"X-Debug-Secret": "debug"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["queued"] == [321]
