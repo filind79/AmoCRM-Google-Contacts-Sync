@@ -1,29 +1,40 @@
+from __future__ import annotations
+
+import os
 from typing import Any, Dict, List
 
 import httpx
 
-from app.config import settings
-from app.storage import get_session, get_token
+from app.core.config import get_settings
 from app.utils import normalize_email, normalize_phone
-
 
 AMO_HEADERS = {"Content-Type": "application/json"}
 
 
 async def get_access_token() -> str:
-    session = get_session()
-    token = get_token(session, "amocrm")
-    if not token:
-        raise RuntimeError("AmoCRM token missing")
-    # TODO: refresh token when expired
-    return token.access_token
+    settings = get_settings()
+    if settings["amo_auth_mode"] == "llt":
+        token = (os.getenv("AMO_LONG_LIVED_TOKEN") or "").strip()
+        if not token:
+            raise RuntimeError("AmoCRM LLT missing")
+        return token
+    if settings["amo_auth_mode"] == "api_key":
+        api_key = (os.getenv("AMO_API_KEY") or "").strip()
+        if not api_key:
+            raise RuntimeError("AmoCRM API key missing")
+        return api_key
+    raise RuntimeError(f"Unsupported AmoCRM auth mode: {settings['amo_auth_mode']}")
 
 
 async def get_contact(contact_id: int) -> Dict[str, Any]:
     token = await get_access_token()
-    url = f"{settings.amo_base_url}/api/v4/contacts/{contact_id}"
+    settings = get_settings(validate=False)
+    base_url = settings["amo_base_url"].rstrip("/")
+    url = f"{base_url}/api/v4/contacts/{contact_id}"
+    headers = {"Authorization": f"Bearer {token}"}
+    headers.update(AMO_HEADERS)
     async with httpx.AsyncClient(timeout=10) as client:
-        resp = await client.get(url, headers={"Authorization": f"Bearer {token}"})
+        resp = await client.get(url, headers=headers)
         resp.raise_for_status()
         return resp.json()
 

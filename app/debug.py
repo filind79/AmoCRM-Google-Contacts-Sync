@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from sqlalchemy import select
 
 from app.config import settings
+from app.core.config import get_settings_snapshot
 from app.google_auth import GoogleAuthError, get_valid_google_access_token
 from app.google_people import GOOGLE_API_BASE
 from app.storage import Token, get_session, get_token
@@ -55,28 +56,41 @@ def debug_google(_=Depends(require_debug_secret)) -> dict[str, object]:
 
 @router.get("/amo")
 def debug_amo(_=Depends(require_debug_secret)) -> dict[str, object]:
-    session = get_session()
-    try:
-        token = get_token(session, "amocrm")
-        auth_mode = "none"
+    snapshot, error = get_settings_snapshot()
+    auth_mode = snapshot.get("amo_auth_mode") or ""
+    if auth_mode not in ("llt", "api_key"):
+        auth_mode_display = auth_mode or "invalid"
         is_ready = False
-        if token and token.access_token:
-            auth_mode = "oauth"
-            if not token.expiry:
-                is_ready = True
-            else:
-                now = datetime.utcnow()
-                is_ready = token.expiry > now
-        elif settings.amo_long_lived_token:
-            auth_mode = "api_key"
-            is_ready = True
-        return {
-            "base_url": settings.amo_base_url,
-            "auth_mode": auth_mode,
-            "is_ready": is_ready,
+    else:
+        auth_mode_display = auth_mode
+        if auth_mode == "llt":
+            is_ready = bool(snapshot.get("amo_has_llt"))
+        else:
+            is_ready = bool(snapshot.get("amo_has_api_key"))
+    payload: dict[str, object] = {
+        "base_url": snapshot.get("amo_base_url"),
+        "auth_mode": auth_mode_display,
+        "is_ready": is_ready,
+    }
+    if error is not None:
+        payload["error"] = str(error)
+    return payload
+
+
+@router.get("/config")
+def debug_config(_=Depends(require_debug_secret)) -> dict[str, object]:
+    snapshot, error = get_settings_snapshot()
+    payload: dict[str, object] = {
+        "amo": {
+            "auth_mode": snapshot.get("amo_auth_mode"),
+            "base_url": snapshot.get("amo_base_url"),
+            "has_api_key": bool(snapshot.get("amo_has_api_key")),
+            "has_llt": bool(snapshot.get("amo_has_llt")),
         }
-    finally:
-        session.close()
+    }
+    if error is not None:
+        payload["amo"]["validation_error"] = str(error)
+    return payload
 
 
 def _parse_retry_after(resp: httpx.Response) -> int | None:

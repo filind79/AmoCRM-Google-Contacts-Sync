@@ -8,6 +8,17 @@ from app.storage import Token, get_session, init_db, save_token
 from app.webhooks import clear_recent_webhook_events
 
 
+def _configure_amo(monkeypatch, *, mode="api_key", secret="token", base_url="https://example.amocrm.ru"):
+    monkeypatch.setenv("AMO_AUTH_MODE", mode)
+    monkeypatch.setenv("AMO_BASE_URL", base_url)
+    if mode == "llt":
+        monkeypatch.setenv("AMO_LONG_LIVED_TOKEN", secret)
+        monkeypatch.delenv("AMO_API_KEY", raising=False)
+    else:
+        monkeypatch.setenv("AMO_API_KEY", secret)
+        monkeypatch.delenv("AMO_LONG_LIVED_TOKEN", raising=False)
+
+
 def _create_app(monkeypatch, secret: str):
     from app.config import settings
 
@@ -78,6 +89,45 @@ def test_debug_db_query_token(monkeypatch):
         resp = client.get("/debug/db?token=s")
         assert resp.status_code == 200
         assert resp.json()["db"] == "ok"
+
+
+def test_debug_config_reports_auth(monkeypatch):
+    _configure_amo(monkeypatch, mode="api_key", secret="api-key", base_url="https://amo.example")
+    app = _create_app(monkeypatch, "secret")
+    with TestClient(app) as client:
+        resp = client.get("/debug/config", headers={"X-Debug-Secret": "secret"})
+    assert resp.status_code == 200
+    payload = resp.json()["amo"]
+    assert payload["auth_mode"] == "api_key"
+    assert payload["base_url"] == "https://amo.example"
+    assert payload["has_api_key"] is True
+    assert payload["has_llt"] is False
+    assert "validation_error" not in payload
+
+
+def test_debug_config_validation_error(monkeypatch):
+    _configure_amo(monkeypatch, mode="llt", secret="")
+    app = _create_app(monkeypatch, "secret")
+    with TestClient(app) as client:
+        resp = client.get("/debug/config", headers={"X-Debug-Secret": "secret"})
+    assert resp.status_code == 200
+    payload = resp.json()["amo"]
+    assert payload["auth_mode"] == "llt"
+    assert payload["has_llt"] is False
+    assert payload.get("validation_error")
+
+
+def test_debug_amo_reflects_mode(monkeypatch):
+    _configure_amo(monkeypatch, mode="llt", secret="llt-token")
+    app = _create_app(monkeypatch, "secret")
+    with TestClient(app) as client:
+        resp = client.get("/debug/amo", headers={"X-Debug-Secret": "secret"})
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["auth_mode"] == "llt"
+    assert payload["is_ready"] is True
+    assert payload["base_url"] == "https://example.amocrm.ru"
+    assert "error" not in payload
 
 
 def test_ping_google_success(monkeypatch):
