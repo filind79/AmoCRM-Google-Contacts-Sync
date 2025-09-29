@@ -1,32 +1,10 @@
 from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional
 
-import logging
-
-from app.config import settings
-from app.google_people import create_contact
-from app.integrations import google_client
-from app.services.match import (
-    MatchCandidate,
-    MatchContext,
-    MatchKeys,
-    build_candidate_from_person,
-    choose_primary,
-    normalize_email,
-    normalize_phone,
-    search_google_candidates,
-)
-from app.services.merge import MissingEtagError, merge_contacts
-from app.services.transform import union_fields
-from app.storage import get_link, save_link
-from app.storage import get_session as get_db_session
-from app.utils import parse_display_name
-
-
-logger = logging.getLogger(__name__)
-
-PERSON_FIELDS = "names,phoneNumbers,emailAddresses,memberships,biographies,metadata"
+from app.services.merge import MissingEtagError
+from app.services.sync_engine import SyncEngine, SyncPlan, SyncResult
 
 
 @dataclass(slots=True)
@@ -36,389 +14,51 @@ class ProcessResult:
     reason: Optional[List[str]] = None
 
 
-class GoogleApplyService:
-    def __init__(self) -> None:
-        self.group_name = (settings.google_contact_group_name or "").strip()
-        self.group_resource_name: Optional[str] = None
-        self.auto_merge = settings.auto_merge_duplicates
-        self.db_session = get_db_session()
-
-    def close(self) -> None:
-        self.db_session.close()
-
-    async def _ensure_group(self) -> Optional[str]:
-        if not self.group_name:
-            return None
-        if self.group_resource_name:
-            return self.group_resource_name
-        resource = await google_client.ensure_group(self.group_name)
-        self.group_resource_name = resource or None
-        return self.group_resource_name
-
+class GoogleApplyService(SyncEngine):
     async def process_contact(self, contact: Dict[str, Any]) -> ProcessResult:
-        amo_id = contact.get("id")
-        raw_emails = contact.get("emails", []) or []
-        raw_phones = contact.get("phones", []) or []
-        keys = MatchKeys.from_raw(raw_phones, raw_emails)
-
-        if not keys:
-            logger.info(
-                "apply.skipped_invalid_keys",
-                extra={"amo_contact_id": amo_id},
-            )
-            return ProcessResult("skipped_invalid_phone", None, reason=["no_valid_keys"])
-
-        link = get_link(self.db_session, str(amo_id)) if amo_id is not None else None
-        mapped_resource = link.google_resource_name if link else None
-
-        await self._ensure_group()
-        candidates = await self._find_candidates(keys, mapped_resource)
-        context = MatchContext(
-            amo_contact_id=amo_id,
-            group_resource_name=self.group_resource_name,
-            mapped_resource_name=mapped_resource,
-        )
-
-        handled = await self._handle_candidates(
-            candidates,
-            keys=keys,
-            context=context,
-            contact=contact,
-        )
-        if handled:
-            result, primary = handled
-            if amo_id is not None:
-                save_link(
-                    self.db_session,
-                    str(amo_id),
-                    result.resource_name or primary.resource_name,
-                )
-            return result
-
-        preflight_candidates: List[MatchCandidate] = []
-        if not candidates:
-            preflight_candidates = await self._find_candidates(keys, mapped_resource)
-        if preflight_candidates:
-            resource_names = [c.resource_name for c in preflight_candidates]
-            handled = await self._handle_candidates(
-                preflight_candidates,
-                keys=keys,
-                context=context,
-                contact=contact,
-            )
-            if handled:
-                result, primary = handled
-                logger.info(
-                    "apply.preflight_switched_to_update",
-                    extra={
-                        "amo_contact_id": amo_id,
-                        "resource_name": resource_names,
-                    },
-                )
-                if amo_id is not None:
-                    save_link(
-                        self.db_session,
-                        str(amo_id),
-                        result.resource_name or primary.resource_name,
-                    )
-                return result
-
-        # No match -> create
-        result = await self._create_contact(contact, keys)
-        if amo_id is not None and result.resource_name:
-            save_link(self.db_session, str(amo_id), result.resource_name)
-        return result
-
-    async def _handle_candidates(
-        self,
-        candidates: Sequence[MatchCandidate],
-        *,
-        keys: MatchKeys,
-        context: MatchContext,
-        contact: Dict[str, Any],
-    ) -> Optional[tuple[ProcessResult, MatchCandidate]]:
-        if not candidates:
-            return None
-
-        primary = choose_primary(candidates, keys, context)
-        if not primary:
-            return None
-
-        duplicates = [c for c in candidates if c.resource_name != primary.resource_name]
-        if duplicates and self.auto_merge:
-            primary = await self._merge_duplicates(primary, duplicates, keys)
-
-        result = await self._update_contact(primary, contact, keys)
-        return result, primary
-
-    async def _find_candidates(
-        self, keys: MatchKeys, mapped_resource: Optional[str]
-    ) -> List[MatchCandidate]:
-        candidates = await search_google_candidates(keys)
-        resource_map = {c.resource_name: c for c in candidates}
-        if mapped_resource and mapped_resource not in resource_map:
-            try:
-                person = await google_client.get_contact(mapped_resource, person_fields=PERSON_FIELDS)
-            except Exception:  # pragma: no cover - defensive against stale mapping
-                logger.warning(
-                    "match.mapping_not_found",
-                    extra={"resource_name": mapped_resource},
-                )
-            else:
-                candidate = build_candidate_from_person(person, keys)
-                if candidate is not None:
-                    resource_map[candidate.resource_name] = candidate
-        return list(resource_map.values())
+        plan = await self.plan(contact)
+        result = await self.apply(plan)
+        return _convert_result(result)
 
     async def merge_candidates(
         self,
-        keys: MatchKeys,
+        keys,
         *,
         amo_contact_id: Optional[int] = None,
         mapped_resource: Optional[str] = None,
     ) -> Dict[str, Any]:
-        await self._ensure_group()
-        candidates = await self._find_candidates(keys, mapped_resource)
-        context = MatchContext(
+        return await super().merge_candidates(
+            keys,
             amo_contact_id=amo_contact_id,
-            group_resource_name=self.group_resource_name,
-            mapped_resource_name=mapped_resource,
-        )
-        if not candidates:
-            return {"merged": 0, "reason": "no_candidates"}
-        primary = choose_primary(candidates, keys, context)
-        if not primary:
-            return {"merged": 0, "reason": "no_primary"}
-        duplicates = [c for c in candidates if c.resource_name != primary.resource_name]
-        if len(duplicates) < 1:
-            return {
-                "merged": 0,
-                "reason": "single_candidate",
-                "primary": primary.resource_name,
-                "candidates": [c.resource_name for c in candidates],
-            }
-        merged_primary = await self._merge_duplicates(primary, duplicates, keys)
-        if amo_contact_id is not None:
-            save_link(self.db_session, str(amo_contact_id), merged_primary.resource_name)
-        return {
-            "merged": len(duplicates),
-            "primary": merged_primary.resource_name,
-            "deleted": [c.resource_name for c in duplicates],
-        }
-
-    async def _merge_duplicates(
-        self,
-        primary: MatchCandidate,
-        duplicates: Sequence[MatchCandidate],
-        keys: MatchKeys,
-    ) -> MatchCandidate:
-        return await merge_contacts(
-            primary,
-            duplicates,
-            keys=keys,
-            group_resource_name=self.group_resource_name,
-            db_session=self.db_session,
+            mapped_resource=mapped_resource,
         )
 
-    async def _update_contact(
-        self, primary: MatchCandidate, contact: Dict[str, Any], keys: MatchKeys
-    ) -> ProcessResult:
-        existing_emails = {
-            normalize_email(e.get("value"))
-            for e in primary.person.get("emailAddresses", []) or []
-            if isinstance(e, dict) and e.get("value")
-        }
-        existing_phones: set[str] = set()
-        for entry in primary.person.get("phoneNumbers", []) or []:
-            if not isinstance(entry, dict):
-                continue
-            value = entry.get("value")
-            if not value:
-                continue
-            normalized_value = normalize_phone(value)
-            if normalized_value:
-                existing_phones.add(normalized_value)
-        new_emails = keys.emails
-        new_phones = keys.phones
-        need_emails = bool(new_emails - existing_emails)
-        need_phones = bool(new_phones - existing_phones)
-        current_name = ""
-        if primary.person.get("names"):
-            current_name = primary.person["names"][0].get("displayName") or ""
-        desired_name = (contact.get("name") or "").strip()
-        need_name = bool(desired_name and desired_name != current_name)
-        need_group = bool(
-            self.group_resource_name and not primary.in_group(self.group_resource_name)
-        )
-        if not any([need_emails, need_phones, need_name, need_group]):
-            reason: List[str] = []
-            if not need_name:
-                reason.append("name")
-            if not need_phones:
-                reason.append("phones")
-            if not need_emails:
-                reason.append("emails")
-            if self.group_resource_name and not need_group:
-                reason.append("group")
-            return ProcessResult("skipped", primary.resource_name, reason=reason)
 
-        amo_person: Dict[str, Any] = {}
-        if new_phones:
-            amo_person["phoneNumbers"] = [{"value": phone} for phone in sorted(new_phones)]
-        if new_emails:
-            amo_person["emailAddresses"] = [
-                {"value": email} for email in sorted(new_emails)
-            ]
-        persons = [amo_person] if amo_person else []
-        payload = union_fields(
-            primary.person,
-            persons,
-            ensure_group=self.group_resource_name,
-        )
-        update_fields = set(payload.keys())
-        if need_name:
-            display_name, given_name, family_name = parse_display_name(desired_name)
-            if display_name:
-                name_entry: Dict[str, Any] = {
-                    "metadata": {"primary": True},
-                    "displayName": display_name,
-                    "unstructuredName": display_name,
-                }
-                if given_name:
-                    name_entry["givenName"] = given_name
-                if family_name:
-                    name_entry["familyName"] = family_name
-                payload["names"] = [name_entry]
-                update_fields.add("names")
-        else:
-            payload.pop("names", None)
-
-        amo_contact_id = contact.get("id")
-        if amo_contact_id is not None:
-            amo_value = str(amo_contact_id)
-            payload["externalIds"] = [{"value": amo_value, "type": "amo_id"}]
-            payload["clientData"] = [{"key": "amo_id", "value": amo_value}]
-            update_fields.update({"externalIds", "clientData"})
-
-        etag = primary.person.get("etag")
-        if not etag:
-            raise MissingEtagError(primary.resource_name)
-        await google_client.update_contact(
-            primary.resource_name,
-            payload,
-            update_person_fields=sorted(update_fields),
-            etag=etag,
-        )
-        return ProcessResult("updated", primary.resource_name)
-
-    async def _create_contact(
-        self, contact: Dict[str, Any], keys: MatchKeys
-    ) -> ProcessResult:
-        payload: Dict[str, Any] = {
-            "name": contact.get("name"),
-            "phones": sorted(keys.phones),
-            "emails": sorted(keys.emails),
-            "external_id": contact.get("id"),
-        }
-        if self.group_resource_name:
-            payload["memberships"] = [
-                {
-                    "contactGroupMembership": {
-                        "contactGroupResourceName": self.group_resource_name
-                    }
-                }
-            ]
-        created = await create_contact(payload)
-        resource_name = created.get("resourceName")
-        if not resource_name:
-            return ProcessResult("created", resource_name)
-
-        final_resource = await self._post_create_merge(
-            contact=contact,
-            keys=keys,
-            resource_name=resource_name,
-        )
-        return ProcessResult("created", final_resource)
-
-    async def _post_create_merge(
-        self,
-        *,
-        contact: Dict[str, Any],
-        keys: MatchKeys,
-        resource_name: str,
-    ) -> str:
-        amo_contact_id = contact.get("id")
-
-        candidates = await search_google_candidates(keys)
-        candidate_map = {candidate.resource_name: candidate for candidate in candidates}
-
-        if resource_name not in candidate_map:
-            try:
-                person = await google_client.get_contact(
-                    resource_name,
-                    person_fields=PERSON_FIELDS,
-                )
-            except Exception:  # pragma: no cover - defensive fallback when fetch fails
-                logger.warning(
-                    "postcreate.fetch_new_contact_failed",
-                    extra={"resource_name": resource_name},
-                    exc_info=True,
-                )
-            else:
-                candidate = build_candidate_from_person(person, keys)
-                if candidate is not None:
-                    candidate_map[candidate.resource_name] = candidate
-
-        if len(candidate_map) <= 1:
-            return resource_name
-
-        primary = candidate_map.get(resource_name)
-        if primary is None:
-            # If the new contact disappeared, keep the original resource.
-            return resource_name
-
-        existing_with_external: Optional[MatchCandidate] = None
-        if amo_contact_id is not None:
-            for candidate in candidate_map.values():
-                if candidate.resource_name == resource_name:
-                    continue
-                if candidate.has_external_id(amo_contact_id=amo_contact_id):
-                    existing_with_external = candidate
-                    break
-
-        if existing_with_external is not None:
-            primary = existing_with_external
-
-        duplicates = [
-            candidate
-            for candidate in candidate_map.values()
-            if candidate.resource_name != primary.resource_name
-        ]
-
-        if not duplicates:
-            return primary.resource_name
-
-        merged_primary = await merge_contacts(
-            primary,
-            duplicates,
-            keys=keys,
-            group_resource_name=self.group_resource_name,
-            db_session=self.db_session,
-        )
-        logger.info(
-            "postcreate.merge_performed",
-            extra={
-                "amo_contact_id": amo_contact_id,
-                "primary": merged_primary.resource_name,
-                "duplicates": [c.resource_name for c in duplicates],
-            },
-        )
-        return merged_primary.resource_name
+def _convert_result(result: SyncResult) -> ProcessResult:
+    reason: Optional[List[str]]
+    if result.reason is None:
+        reason = None
+    elif isinstance(result.reason, list):
+        reason = result.reason
+    else:
+        reason = [result.reason]
+    return ProcessResult(result.action, result.resource_name, reason)
 
 
 async def apply_contact(contact: Dict[str, Any]) -> ProcessResult:
     service = GoogleApplyService()
     try:
-        return await service.process_contact(contact)
+        plan = await service.plan(contact)
+        result = await service.apply(plan)
+        return _convert_result(result)
     finally:
         service.close()
+
+
+__all__ = [
+    "GoogleApplyService",
+    "MissingEtagError",
+    "ProcessResult",
+    "SyncPlan",
+    "SyncResult",
+]

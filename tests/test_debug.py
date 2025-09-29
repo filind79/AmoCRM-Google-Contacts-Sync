@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 
 import httpx
 from fastapi.testclient import TestClient
@@ -103,6 +104,57 @@ def test_debug_config_reports_auth(monkeypatch):
     assert payload["has_api_key"] is True
     assert payload["has_llt"] is False
     assert "validation_error" not in payload
+
+
+def test_debug_trace_returns_decision(monkeypatch):
+    monkeypatch.setattr(settings, "debug_secret", "secret")
+
+    async def fake_get_contact(amo_id: int):  # noqa: D401
+        return {"id": amo_id, "name": "Trace", "custom_fields_values": []}
+
+    def fake_extract(contact):  # noqa: D401
+        return {"name": contact.get("name"), "phones": ["+1234567890"], "emails": ["trace@example.com"]}
+
+    candidate_info = SimpleNamespace(
+        resource_name="people/1",
+        matched_phones={"+1234567890"},
+        matched_emails={"trace@example.com"},
+        in_group=True,
+        has_external_id=True,
+    )
+
+    candidate = SimpleNamespace(person={"phoneNumbers": [{"value": "+1234567890"}]})
+    plan = SimpleNamespace(
+        keys=SimpleNamespace(phones={"+1234567890"}, emails={"trace@example.com"}),
+        candidate_info=[candidate_info],
+        candidates=[candidate],
+        action="update",
+        reason="single_candidate",
+        preflight_blocked_create=True,
+        primary=SimpleNamespace(resource_name="people/1"),
+        duplicates=[],
+    )
+
+    class DummyEngine:
+        async def plan(self, contact):  # noqa: D401
+            return plan
+
+        def close(self):  # noqa: D401
+            return None
+
+    monkeypatch.setattr("app.debug.get_contact", fake_get_contact)
+    monkeypatch.setattr("app.debug.extract_name_and_fields", fake_extract)
+    monkeypatch.setattr("app.debug.SyncEngine", DummyEngine)
+
+    app = _create_app(monkeypatch, "secret")
+    with TestClient(app) as client:
+        resp = client.get("/debug/trace?amo_id=1", headers={"X-Debug-Secret": "secret"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["decision"]["action"] == "update"
+    assert data["decision"]["primary"] == "people/1"
+    assert data["keys"]["phones"] == ["+123*****90"]
+    assert data["candidates"][0]["resourceName"] == "people/1"
 
 
 def test_debug_config_validation_error(monkeypatch):

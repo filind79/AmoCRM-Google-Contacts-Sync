@@ -8,16 +8,30 @@ import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from sqlalchemy import select
 
+from app.amocrm import extract_name_and_fields, get_contact
 from app.config import settings
 from app.core.config import get_settings_snapshot
 from app.google_auth import GoogleAuthError, get_valid_google_access_token
 from app.google_people import GOOGLE_API_BASE
+from app.services.sync_engine import SyncEngine
 from app.storage import Token, get_session, get_token
 from app.webhooks import get_recent_webhook_events
 
 router = APIRouter()
 
 _ACCEPTED_WEBHOOK_AUTH = ("X-Webhook-Secret", "X-Debug-Secret", "?token")
+
+
+def _mask_phone(phone: str) -> str:
+    if not phone:
+        return phone
+    digits = phone
+    if len(digits) <= 4:
+        return "*" * len(digits)
+    head = digits[:4]
+    tail = digits[-2:]
+    masked = "*" * max(0, len(digits) - 6)
+    return f"{head}{masked}{tail}"
 
 
 def require_debug_secret(
@@ -52,6 +66,57 @@ def debug_google(_=Depends(require_debug_secret)) -> dict[str, object]:
         return {"has_token": True, "expires_at": expires, "scopes": token.scopes}
     finally:
         session.close()
+
+
+@router.get("/trace")
+async def debug_trace(
+    amo_id: int, _=Depends(require_debug_secret)
+) -> dict[str, object]:
+    contact_data = await get_contact(amo_id)
+    extracted = extract_name_and_fields(contact_data)
+    extracted["id"] = amo_id
+
+    engine = SyncEngine()
+    try:
+        plan = await engine.plan(extracted)
+    finally:
+        engine.close()
+
+    phones = sorted(plan.keys.phones)
+    emails = sorted(plan.keys.emails)
+    masked_phones = [_mask_phone(phone) for phone in phones]
+
+    candidates: list[dict[str, object]] = []
+    for info, candidate in zip(plan.candidate_info, plan.candidates):
+        entry: dict[str, object] = {
+            "resourceName": info.resource_name,
+            "matchedPhones": [_mask_phone(p) for p in info.matched_phones],
+            "matchedEmails": list(info.matched_emails),
+            "inGroup": info.in_group,
+            "hasExternalId": info.has_external_id,
+        }
+        phones_full: list[str] = []
+        for item in candidate.person.get("phoneNumbers", []) or []:
+            if isinstance(item, dict) and item.get("value"):
+                phones_full.append(_mask_phone(item["value"]))
+        if phones_full:
+            entry["phones"] = phones_full
+        candidates.append(entry)
+
+    decision = {
+        "action": plan.action,
+        "reason": plan.reason,
+        "preflightBlocked": plan.preflight_blocked_create,
+        "primary": plan.primary.resource_name if plan.primary else None,
+        "duplicates": [c.resource_name for c in plan.duplicates],
+    }
+
+    return {
+        "amo_id": amo_id,
+        "keys": {"phones": masked_phones, "emails": emails},
+        "decision": decision,
+        "candidates": candidates,
+    }
 
 
 @router.get("/amo")

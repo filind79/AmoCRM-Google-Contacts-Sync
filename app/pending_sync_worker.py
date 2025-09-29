@@ -7,7 +7,7 @@ from typing import Optional
 from loguru import logger
 
 from app.amocrm import extract_name_and_fields, get_contact
-from app.google_people import GoogleRateLimitError, upsert_contact_by_external_id
+from app.google_people import GoogleRateLimitError
 from app.storage import (
     PendingSync,
     enqueue_pending_sync,
@@ -15,6 +15,7 @@ from app.storage import (
     get_session,
     save_link,
 )
+from app.services.sync_engine import SyncEngine
 
 
 class PendingSyncWorker:
@@ -101,10 +102,13 @@ class PendingSyncWorker:
     async def _handle_record(self, session, record: PendingSync) -> None:
         contact_id = int(record.amo_contact_id)
         logger.debug("pending_sync.process", contact_id=contact_id, attempts=record.attempts)
+        engine = SyncEngine()
         try:
             contact_data = await get_contact(contact_id)
             payload = extract_name_and_fields(contact_data)
-            result = await upsert_contact_by_external_id(contact_id, payload)
+            payload["id"] = contact_id
+            plan = await engine.plan(payload)
+            result = await engine.apply(plan)
         except GoogleRateLimitError as exc:
             delay = max(exc.retry_after or 0, self._retry_delay(record.attempts + 1))
             self._schedule_retry(session, record, delay, "google_rate_limit")
@@ -140,7 +144,7 @@ class PendingSyncWorker:
                 attempts=record.attempts,
             )
         else:
-            resource_name = result.get("resourceName") if isinstance(result, dict) else None
+            resource_name = result.resource_name if hasattr(result, "resource_name") else None
             if resource_name:
                 save_link(session, str(contact_id), resource_name)
             session.delete(record)
@@ -149,8 +153,10 @@ class PendingSyncWorker:
                 "pending_sync.synced",
                 contact_id=contact_id,
                 resource_name=resource_name,
-                action=result.get("action") if isinstance(result, dict) else None,
+                action=getattr(result, "action", None),
             )
+        finally:
+            engine.close()
 
     def _schedule_retry(self, session, record: PendingSync, delay_seconds: int, error: str) -> None:
         record.attempts += 1
