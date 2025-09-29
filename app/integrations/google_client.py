@@ -16,15 +16,37 @@ async def search_contacts(
     query: str,
     *,
     read_mask: str = "names,emailAddresses,phoneNumbers,metadata",
+    sources: Optional[Sequence[str]] = None,
 ) -> List[Dict[str, Any]]:
     """Search contacts using ``people.searchContacts`` and return raw records."""
 
     session = get_session()
     try:
         headers = await _token_headers(session)
-        params = {"query": query, "readMask": read_mask}
+        params: Dict[str, Any] = {"query": query, "readMask": read_mask}
+        if sources:
+            params["sources"] = ",".join(sources)
         url = f"{GOOGLE_API_BASE}/people:searchContacts"
         response = await _request("GET", url, params=params, headers=headers)
+        return [item.get("person", {}) for item in response.json().get("results", [])]
+    finally:
+        session.close()
+
+
+async def search_other_contacts(
+    query: str,
+    *,
+    read_mask: str = "names,emailAddresses,phoneNumbers,metadata",
+) -> List[Dict[str, Any]]:
+    """Search ``Other Contacts`` using ``otherContacts.search``."""
+
+    session = get_session()
+    try:
+        headers = await _token_headers(session)
+        headers["Content-Type"] = "application/json"
+        body = {"query": query, "readMask": read_mask}
+        url = f"{GOOGLE_API_BASE}/otherContacts:search"
+        response = await _request("POST", url, headers=headers, json=body)
         return [item.get("person", {}) for item in response.json().get("results", [])]
     finally:
         session.close()

@@ -111,18 +111,66 @@ async def search_google_candidates(keys: MatchKeys) -> List[MatchCandidate]:
     person_fields = "names,phoneNumbers,emailAddresses,memberships,biographies,metadata"
 
     seen_queries: Set[str] = set()
+    sources_supported = True
+    other_contacts_supported = True
 
-    async def _collect(query: str) -> None:
-        if not query or query in seen_queries:
-            return
-
-        seen_queries.add(query)
-        results = await google_client.search_contacts(query, read_mask=read_mask)
-        for person in results:
+    async def _register(persons: Iterable[Dict[str, Any]]) -> None:
+        for person in persons:
             resource_name = person.get("resourceName")
             if not resource_name:
                 continue
             candidate_map.setdefault(resource_name, {})
+
+    async def _collect(query: str) -> None:
+        nonlocal sources_supported, other_contacts_supported
+
+        if not query or query in seen_queries:
+            return
+
+        seen_queries.add(query)
+
+        if sources_supported:
+            try:
+                results = await google_client.search_contacts(
+                    query,
+                    read_mask=read_mask,
+                    sources=(
+                        "READ_SOURCE_TYPE_CONTACT",
+                        "READ_SOURCE_TYPE_OTHER_CONTACT",
+                    ),
+                )
+            except Exception:  # pragma: no cover - fallback for unsupported sources
+                sources_supported = False
+                logger.debug(
+                    "match.search_contacts_sources_failed",
+                    exc_info=True,
+                    extra={"query": query},
+                )
+            else:
+                await _register(results)
+                return
+
+        results = await google_client.search_contacts(query, read_mask=read_mask)
+        await _register(results)
+
+        if not other_contacts_supported:
+            return
+
+        try:
+            other_results = await google_client.search_other_contacts(
+                query,
+                read_mask=read_mask,
+            )
+        except Exception:  # pragma: no cover - fallback when access is missing
+            other_contacts_supported = False
+            logger.debug(
+                "match.search_other_contacts_failed",
+                exc_info=True,
+                extra={"query": query},
+            )
+            return
+
+        await _register(other_results)
 
     for phone in keys.phones:
         await _collect(phone)
