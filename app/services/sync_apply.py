@@ -330,7 +330,90 @@ class GoogleApplyService:
             ]
         created = await create_contact(payload)
         resource_name = created.get("resourceName")
-        return ProcessResult("created", resource_name)
+        if not resource_name:
+            return ProcessResult("created", resource_name)
+
+        final_resource = await self._post_create_merge(
+            contact=contact,
+            keys=keys,
+            resource_name=resource_name,
+        )
+        return ProcessResult("created", final_resource)
+
+    async def _post_create_merge(
+        self,
+        *,
+        contact: Dict[str, Any],
+        keys: MatchKeys,
+        resource_name: str,
+    ) -> str:
+        amo_contact_id = contact.get("id")
+
+        candidates = await search_google_candidates(keys)
+        candidate_map = {candidate.resource_name: candidate for candidate in candidates}
+
+        if resource_name not in candidate_map:
+            try:
+                person = await google_client.get_contact(
+                    resource_name,
+                    person_fields=PERSON_FIELDS,
+                )
+            except Exception:  # pragma: no cover - defensive fallback when fetch fails
+                logger.warning(
+                    "postcreate.fetch_new_contact_failed",
+                    extra={"resource_name": resource_name},
+                    exc_info=True,
+                )
+            else:
+                candidate = build_candidate_from_person(person, keys)
+                if candidate is not None:
+                    candidate_map[candidate.resource_name] = candidate
+
+        if len(candidate_map) <= 1:
+            return resource_name
+
+        primary = candidate_map.get(resource_name)
+        if primary is None:
+            # If the new contact disappeared, keep the original resource.
+            return resource_name
+
+        existing_with_external: Optional[MatchCandidate] = None
+        if amo_contact_id is not None:
+            for candidate in candidate_map.values():
+                if candidate.resource_name == resource_name:
+                    continue
+                if candidate.has_external_id(amo_contact_id=amo_contact_id):
+                    existing_with_external = candidate
+                    break
+
+        if existing_with_external is not None:
+            primary = existing_with_external
+
+        duplicates = [
+            candidate
+            for candidate in candidate_map.values()
+            if candidate.resource_name != primary.resource_name
+        ]
+
+        if not duplicates:
+            return primary.resource_name
+
+        merged_primary = await merge_contacts(
+            primary,
+            duplicates,
+            keys=keys,
+            group_resource_name=self.group_resource_name,
+            db_session=self.db_session,
+        )
+        logger.info(
+            "postcreate.merge_performed",
+            extra={
+                "amo_contact_id": amo_contact_id,
+                "primary": merged_primary.resource_name,
+                "duplicates": [c.resource_name for c in duplicates],
+            },
+        )
+        return merged_primary.resource_name
 
 
 async def apply_contact(contact: Dict[str, Any]) -> ProcessResult:
