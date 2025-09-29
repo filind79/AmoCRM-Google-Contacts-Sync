@@ -68,10 +68,16 @@ async def merge_contacts(
     logger.info("merge.primary=%s", primary.resource_name)
 
     persons = [c.person for c in duplicates]
+    resolved_group = group_resource_name
+    if not resolved_group:
+        group_name = (settings.google_contact_group_name or "").strip()
+        if group_name:
+            resolved_group = await google_client.ensure_group(group_name)
+
     payload = union_fields(
         primary.person,
         persons,
-        ensure_group=group_resource_name or (settings.google_contact_group_name or None),
+        ensure_group=resolved_group,
     )
 
     external_ids = _merge_external_ids([primary.person, *persons])
