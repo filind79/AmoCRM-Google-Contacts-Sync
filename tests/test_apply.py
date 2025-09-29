@@ -4,7 +4,7 @@ from fastapi.testclient import TestClient
 from app import amocrm
 from app.google_auth import GoogleAuthError
 from app.google_people import GoogleRateLimitError
-from app.services.sync_apply import MissingEtagError, ProcessResult
+from app.services.sync_apply import ProcessResult
 from app.services.sync_engine import RecoverableSyncError
 
 
