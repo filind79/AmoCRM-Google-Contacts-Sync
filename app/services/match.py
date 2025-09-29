@@ -110,7 +110,13 @@ async def search_google_candidates(keys: MatchKeys) -> List[MatchCandidate]:
     read_mask = "names,emailAddresses,phoneNumbers,metadata"
     person_fields = "names,phoneNumbers,emailAddresses,memberships,biographies,metadata"
 
+    seen_queries: Set[str] = set()
+
     async def _collect(query: str) -> None:
+        if not query or query in seen_queries:
+            return
+
+        seen_queries.add(query)
         results = await google_client.search_contacts(query, read_mask=read_mask)
         for person in results:
             resource_name = person.get("resourceName")
