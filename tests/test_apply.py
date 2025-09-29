@@ -2,6 +2,7 @@ from fastapi.testclient import TestClient
 from app import amocrm
 from app.google_auth import GoogleAuthError
 from app.google_people import GoogleRateLimitError
+from app.services.sync_apply import MissingEtagError, ProcessResult
 
 
 def create(monkeypatch, secret: str | None = None):
@@ -9,6 +10,8 @@ def create(monkeypatch, secret: str | None = None):
 
     if secret is not None:
         monkeypatch.setattr(settings, "debug_secret", secret)
+    monkeypatch.setenv("AMO_AUTH_MODE", "api_key")
+    monkeypatch.setenv("AMO_API_KEY", "dummy")
     from app.main import create_app
 
     return create_app()
@@ -24,43 +27,29 @@ def test_apply_upserts(monkeypatch):
             {"id": 3, "name": "c", "emails": ["c@example.com"], "phones": []},
         ]
 
-    async def fake_search(key):
-        if key == "a@example.com":
-            return {
-                "resourceName": "people/1",
-                "etag": "e1",
-                "names": [{"displayName": "old"}],
-                "emails": ["a@example.com"],
-                "phones": [],
-            }
-        if key == "b@example.com":
-            return {
-                "resourceName": "people/2",
-                "etag": "e2",
-                "names": [{"displayName": "b"}],
-                "emails": ["b@example.com"],
-                "phones": [],
-            }
-        return None
-
-    updates: list[tuple[str, str, dict]] = []
-
-    async def fake_update(resource_name, etag, data):
-        updates.append((resource_name, etag, data))
-        return {}
-
-    creates: list[int] = []
-
-    async def fake_upsert(amo_id, data):  # noqa: ARG001
-        creates.append(amo_id)
-        return {"resourceName": f"people/{amo_id}", "action": "create"}
-
     monkeypatch.setattr(sync_module, "fetch_amo_contacts", fake_fetch_amo)
-    monkeypatch.setattr(sync_module.google_people, "search_contact", fake_search)
-    monkeypatch.setattr(sync_module.google_people, "update_contact", fake_update)
-    monkeypatch.setattr(
-        sync_module.google_people, "upsert_contact_by_external_id", fake_upsert
-    )
+    results = {
+        1: ProcessResult("updated", "people/1"),
+        2: ProcessResult("skipped", "people/2", ["name", "phones", "emails"]),
+        3: ProcessResult("created", "people/3"),
+    }
+
+    instances: list[object] = []
+
+    class DummyService:
+        def __init__(self):
+            self.calls: list[int] = []
+            instances.append(self)
+
+        async def process_contact(self, contact):  # noqa: ANN001
+            amo_id = contact["id"]
+            self.calls.append(amo_id)
+            return results[amo_id]
+
+        def close(self):  # noqa: D401
+            return None
+
+    monkeypatch.setattr(sync_module, "GoogleApplyService", DummyService)
 
     app = create(monkeypatch, "s")
     with TestClient(app) as client:
@@ -74,11 +63,9 @@ def test_apply_upserts(monkeypatch):
         assert data["updated"] == 1
         assert data["skip_existing"] == 1
         assert data["processed"] == 3
-        assert creates == [3]
-        assert [u[0] for u in updates] == ["people/1"]
-        assert updates[0][1] == "e1"
         skip_sample = data["samples"]["skip_existing"][0]
         assert skip_sample["reason"] == ["name", "phones", "emails"]
+        assert instances and instances[0].calls == [1, 2, 3]
 
 
 def test_apply_missing_etag(monkeypatch):
@@ -87,29 +74,18 @@ def test_apply_missing_etag(monkeypatch):
     async def fake_fetch_amo(limit, since_days, since_minutes=None, *, amo_ids=None, stats=None):  # noqa: ARG001
         return [{"id": 1, "name": "a", "emails": ["a@example.com"], "phones": []}]
 
-    async def fake_search(key):  # noqa: ARG001
-        return {
-            "resourceName": "people/1",
-            "names": [{"displayName": "old"}],
-            "emails": ["a@example.com"],
-            "phones": [],
-        }
-
-    updates: list[tuple[str, str, dict]] = []
-
-    async def fake_update(resource_name, etag, data):  # pragma: no cover - should not run
-        updates.append((resource_name, etag, data))
-        return {}
-
-    async def fake_upsert(amo_id, data):  # noqa: ARG001
-        return {"resourceName": f"people/{amo_id}", "action": "create"}
-
     monkeypatch.setattr(sync_module, "fetch_amo_contacts", fake_fetch_amo)
-    monkeypatch.setattr(sync_module.google_people, "search_contact", fake_search)
-    monkeypatch.setattr(sync_module.google_people, "update_contact", fake_update)
-    monkeypatch.setattr(
-        sync_module.google_people, "upsert_contact_by_external_id", fake_upsert
-    )
+    class DummyService:
+        def __init__(self):
+            pass
+
+        async def process_contact(self, contact):  # noqa: ANN001
+            raise MissingEtagError("people/1")
+
+        def close(self):  # noqa: D401
+            return None
+
+    monkeypatch.setattr(sync_module, "GoogleApplyService", DummyService)
 
     app = create(monkeypatch, "s")
     with TestClient(app) as client:
@@ -120,7 +96,6 @@ def test_apply_missing_etag(monkeypatch):
         assert resp.status_code == 200
         data = resp.json()
         assert data["updated"] == 0
-        assert updates == []
         assert data["errors"][0]["reason"] == "missing_etag"
 
 
@@ -133,19 +108,23 @@ def test_apply_rate_limited(monkeypatch):
             {"id": 2, "name": "b", "emails": ["b@example.com"], "phones": []},
         ]
 
-    async def fake_search(key):  # noqa: ARG001
-        return None
-
-    async def fake_upsert(amo_id, data):  # noqa: ARG001
-        if amo_id == 1:
-            return {"resourceName": "people/1", "action": "create"}
-        raise GoogleRateLimitError(12)
-
     monkeypatch.setattr(sync_module, "fetch_amo_contacts", fake_fetch_amo)
-    monkeypatch.setattr(sync_module.google_people, "search_contact", fake_search)
-    monkeypatch.setattr(
-        sync_module.google_people, "upsert_contact_by_external_id", fake_upsert
-    )
+
+    class DummyService:
+        def __init__(self):
+            self.calls: list[int] = []
+
+        async def process_contact(self, contact):  # noqa: ANN001
+            amo_id = contact["id"]
+            if amo_id == 1:
+                self.calls.append(amo_id)
+                return ProcessResult("created", "people/1")
+            raise GoogleRateLimitError(12)
+
+        def close(self):  # noqa: D401
+            return None
+
+    monkeypatch.setattr(sync_module, "GoogleApplyService", DummyService)
 
     app = create(monkeypatch, "s")
     with TestClient(app) as client:
@@ -309,14 +288,19 @@ def test_apply_skips_none_custom_fields_contacts_no_crash(monkeypatch):
             parsed.append({"id": c["id"], "name": fields["name"], "emails": fields["emails"], "phones": fields["phones"]})
         return parsed
 
-    async def fake_upsert(amo_id, data):  # noqa: ARG001
-        return {"resourceName": f"people/{amo_id}", "action": "create"}
-
     monkeypatch.setattr(sync_module, "fetch_amo_contacts", fake_fetch)
-    monkeypatch.setattr(sync_module.google_people, "search_contact", lambda key: None)
-    monkeypatch.setattr(
-        sync_module.google_people, "upsert_contact_by_external_id", fake_upsert
-    )
+
+    class DummyService:
+        def __init__(self):
+            pass
+
+        async def process_contact(self, contact):  # noqa: ANN001
+            return ProcessResult("created", f"people/{contact['id']}")
+
+        def close(self):  # noqa: D401
+            return None
+
+    monkeypatch.setattr(sync_module, "GoogleApplyService", DummyService)
 
     app = create(monkeypatch, "s")
     with TestClient(app) as client:

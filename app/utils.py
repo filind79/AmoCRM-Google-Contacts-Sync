@@ -2,18 +2,24 @@ import re
 from typing import List, Optional, Tuple
 
 
-def normalize_phone(phone: str) -> str:
-    """Return a unified ``+<digits>`` phone representation.
+def normalize_phone(phone: str) -> Optional[str]:
+    """Return an E.164 compliant phone representation if possible.
 
-    ``normalize_phone`` strips all non-digit characters, converts a Russian
-    leading ``8`` to ``+7`` and handles European ``00`` prefixes.
+    The function strips all non-digit characters, normalises Russian leading
+    ``8`` to ``+7`` and handles the European ``00`` international prefix.  If
+    less than ten digits remain after normalisation the value is treated as
+    noise and ``None`` is returned.
     """
 
     digits = re.sub(r"\D", "", phone)
+    if not digits:
+        return None
     if digits.startswith("00"):
         digits = digits[2:]
     if digits.startswith("8") and len(digits) == 11:
         digits = "7" + digits[1:]
+    if len(digits) < 10:
+        return None
     return "+" + digits
 
 

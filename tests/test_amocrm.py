@@ -11,7 +11,7 @@ def test_extract_name_and_fields():
     }
     result = extract_name_and_fields(contact)
     assert result["name"] == "John Doe"
-    assert result["phones"] == ["+123"]
+    assert result["phones"] == []
     assert result["emails"] == ["test@example.com"]
 
 
