@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import os
-
 import pytest
 
 from app.core.config import get_settings, get_settings_snapshot
