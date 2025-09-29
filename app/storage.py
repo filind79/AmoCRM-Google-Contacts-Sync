@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional
+from typing import Iterable, Optional
 
 from sqlalchemy import (
     Column,
@@ -124,6 +124,25 @@ def save_link(session, amo_contact_id: str, google_resource_name: str) -> Link:
     session.commit()
     session.refresh(link)
     return link
+
+
+def remap_google_links(
+    session, target_resource_name: str, source_resource_names: Iterable[str]
+) -> None:
+    resources = [
+        name for name in source_resource_names if name and name != target_resource_name
+    ]
+    if not resources:
+        return
+    stmt = select(Link).where(Link.google_resource_name.in_(resources))
+    links = session.execute(stmt).scalars().all()
+    if not links:
+        return
+    now = datetime.utcnow()
+    for link in links:
+        link.google_resource_name = target_resource_name
+        link.updated_at = now
+    session.commit()
 
 
 def get_pending_sync(session, amo_contact_id: int) -> Optional[PendingSync]:

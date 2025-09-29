@@ -2,6 +2,13 @@ import os
 from dataclasses import dataclass
 
 
+def _env_bool(name: str, default: str = "false") -> bool:
+    value = os.getenv(name, default)
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 @dataclass
 class Settings:
     app_env: str = os.getenv("APP_ENV", "dev")
@@ -17,6 +24,8 @@ class Settings:
     google_client_secret: str = os.getenv("GOOGLE_CLIENT_SECRET", "")
     google_scopes: str = os.getenv("GOOGLE_SCOPES", "https://www.googleapis.com/auth/contacts")
     google_redirect_uri: str = os.getenv("GOOGLE_REDIRECT_URI", "http://localhost:8000/oauth/google/callback")
+    auto_merge_duplicates: bool = _env_bool("AUTO_MERGE_DUPLICATES", "false")
+    google_contact_group_name: str = os.getenv("GOOGLE_CONTACT_GROUP_NAME", "")
 
     webhook_shared_secret: str = os.getenv("WEBHOOK_SHARED_SECRET", "")
     webhook_secret: str = os.getenv("WEBHOOK_SECRET", os.getenv("WEBHOOK_SHARED_SECRET", ""))

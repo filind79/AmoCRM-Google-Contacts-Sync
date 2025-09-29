@@ -373,7 +373,11 @@ async def upsert_contact_by_external_id(amo_contact_id: int, data: Dict[str, Any
             if family_name:
                 name_entry["familyName"] = family_name
             body["names"] = [name_entry]
-        phones = [normalize_phone(p) for p in data.get("phones", [])]
+        phones = [
+            normalized
+            for p in data.get("phones", [])
+            if p and (normalized := normalize_phone(p))
+        ]
         phones = unique(phones)
         if phones:
             body["phoneNumbers"] = [{"value": p} for p in phones]
@@ -432,13 +436,23 @@ async def create_contact(data: Dict[str, Any]) -> Dict[str, Any]:
     if external_id is not None:
         body["externalIds"] = [{"value": str(external_id), "type": "AMOCRM"}]
 
-    phones = unique([normalize_phone(p) for p in data.get("phones", []) if p])
+    phones = unique(
+        [
+            normalized
+            for p in data.get("phones", [])
+            if p and (normalized := normalize_phone(p))
+        ]
+    )
     if phones:
         body["phoneNumbers"] = [{"value": p} for p in phones]
 
     emails = unique([normalize_email(e) for e in data.get("emails", []) if e])
     if emails:
         body["emailAddresses"] = [{"value": e} for e in emails]
+
+    memberships = data.get("memberships")
+    if memberships:
+        body["memberships"] = memberships
 
     url = f"{GOOGLE_API_BASE}/people:createContact"
 

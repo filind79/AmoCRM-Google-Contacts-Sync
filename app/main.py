@@ -2,6 +2,7 @@ import logging
 
 from fastapi import FastAPI
 
+from app.api.debug_merge import router as debug_merge_router
 from app.auth import router as auth_router
 from app.backfill import router as backfill_router
 from app.config import settings
@@ -50,6 +51,7 @@ def create_app() -> FastAPI:
     app.include_router(webhook_router)
     app.include_router(backfill_router)
     app.include_router(debug_router, prefix="/debug")
+    app.include_router(debug_merge_router, prefix="/debug/merge")
     app.include_router(sync_router)
     return app
 
