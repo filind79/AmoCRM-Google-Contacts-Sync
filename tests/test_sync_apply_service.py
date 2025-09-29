@@ -123,7 +123,7 @@ async def test_process_contact_postcreate_race_merges_duplicates(
 
     call_count = 0
 
-    keys = MatchKeys.from_raw(["+79991234567"], ["race@example.com"])
+    expected_keys = MatchKeys.from_raw(["+79991234567"], ["race@example.com"])
     existing = _candidate(
         "people/existing",
         phones=["+79991234567"],
@@ -159,6 +159,8 @@ async def test_process_contact_postcreate_race_merges_duplicates(
     merge_calls: list[tuple[MatchCandidate, list[MatchCandidate]]] = []
 
     async def fake_merge(primary, duplicates, *, keys, group_resource_name, db_session):  # noqa: ANN001
+        assert keys.phones == expected_keys.phones
+        assert keys.emails == expected_keys.emails
         merge_calls.append((primary, list(duplicates)))
         merged_person = dict(primary.person)
         extra_phones = [
