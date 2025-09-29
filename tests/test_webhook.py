@@ -124,3 +124,113 @@ async def test_webhook_accepts_debug_secret(monkeypatch):
         )
         assert resp.status_code == 200
         assert resp.json()["queued"] == [321]
+
+
+@pytest.mark.asyncio
+async def test_webhook_parses_json_payload(monkeypatch):
+    monkeypatch.setattr(settings, "webhook_secret", "secret")
+    monkeypatch.setattr(settings, "debug_secret", "")
+
+    captured: list[int] = []
+
+    def fake_enqueue(cid: int) -> None:
+        captured.append(cid)
+
+    monkeypatch.setattr("app.webhooks.enqueue_contact", fake_enqueue)
+    monkeypatch.setattr("app.webhooks.pending_sync_worker.wake", lambda: None)
+
+    app = create_app()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/webhook/amo?token=secret",
+            json={"event": "contact_updated", "contact_id": 90959743},
+        )
+
+    assert resp.status_code == 200
+    assert resp.json() == {"queued": [90959743]}
+    assert captured == [90959743]
+
+
+@pytest.mark.asyncio
+async def test_webhook_parses_form_payload(monkeypatch):
+    monkeypatch.setattr(settings, "webhook_secret", "secret")
+    monkeypatch.setattr(settings, "debug_secret", "")
+
+    captured: set[int] = set()
+
+    def fake_enqueue(cid: int) -> None:
+        captured.add(cid)
+
+    monkeypatch.setattr("app.webhooks.enqueue_contact", fake_enqueue)
+    monkeypatch.setattr("app.webhooks.pending_sync_worker.wake", lambda: None)
+
+    payload = (
+        "contacts[add][0][id]=101&contacts[add][0][name]=Test&"
+        "contacts[update][0][id]=202&contacts[update][1][id]=203"
+    )
+
+    app = create_app()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/webhook/amo?token=secret",
+            content=payload,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+
+    assert resp.status_code == 200
+    assert set(resp.json()["queued"]) == {101, 202, 203}
+    assert captured == {101, 202, 203}
+
+
+@pytest.mark.asyncio
+async def test_webhook_ignores_invalid_form_ids(monkeypatch):
+    monkeypatch.setattr(settings, "webhook_secret", "secret")
+    monkeypatch.setattr(settings, "debug_secret", "")
+
+    captured: list[int] = []
+
+    def fake_enqueue(cid: int) -> None:
+        captured.append(cid)
+
+    monkeypatch.setattr("app.webhooks.enqueue_contact", fake_enqueue)
+    monkeypatch.setattr("app.webhooks.pending_sync_worker.wake", lambda: None)
+
+    payload = (
+        "contacts[add][0][id]=abc&contacts[add][1][id]=303&"
+        "contacts[update][0][id]=&contacts[update][1][id]=404"
+    )
+
+    app = create_app()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/webhook/amo?token=secret",
+            content=payload,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+
+    assert resp.status_code == 200
+    assert set(resp.json()["queued"]) == {303, 404}
+    assert set(captured) == {303, 404}
+
+
+@pytest.mark.asyncio
+async def test_webhook_empty_payload_returns_warning(monkeypatch):
+    monkeypatch.setattr(settings, "webhook_secret", "secret")
+    monkeypatch.setattr(settings, "debug_secret", "")
+
+    monkeypatch.setattr("app.webhooks.enqueue_contact", lambda cid: None)
+    monkeypatch.setattr("app.webhooks.pending_sync_worker.wake", lambda: None)
+
+    app = create_app()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/webhook/amo?token=secret",
+            json={"event": "contact_updated"},
+        )
+
+    assert resp.status_code == 200
+    assert resp.json() == {"queued": [], "warning": "no_contact_ids_parsed"}

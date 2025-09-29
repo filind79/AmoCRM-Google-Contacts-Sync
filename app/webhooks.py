@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from collections import deque
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Set
+from json import JSONDecodeError
+import re
+from typing import Any, Dict, List, Mapping, Set
+from urllib.parse import parse_qs
 
-from fastapi import APIRouter, Header, HTTPException, Query
+from fastapi import APIRouter, Header, Query, Request
 from fastapi.responses import JSONResponse
 from loguru import logger
 
@@ -113,24 +116,74 @@ def _guess_event_name(payload: Dict[str, Any], contact_id: int) -> str:
     return "contact_updated"
 
 
+_FORM_CONTACT_ID_PATTERN = re.compile(r"^contacts\[(add|update)\]\[\d+\]\[id\]$")
+
+
+def _extract_contact_ids_from_form(form_data: Mapping[str, List[str]]) -> List[int]:
+    ids: Set[int] = set()
+    for key, values in form_data.items():
+        if not _FORM_CONTACT_ID_PATTERN.match(key):
+            continue
+        for value in values:
+            try:
+                contact_id = int(value)
+            except (TypeError, ValueError):
+                logger.warning("webhook.invalid_contact_id", contact_id=value)
+                continue
+            if contact_id > 0:
+                ids.add(contact_id)
+    return list(ids)
+
+
 @router.post("/webhook/amo")
 async def webhook_amo(
-    payload: Dict[str, Any],
+    request: Request,
     x_webhook_secret: str | None = Header(None, alias="X-Webhook-Secret"),
     token: str | None = Query(None),
     x_debug_secret: str | None = Header(None, alias="X-Debug-Secret"),
 ) -> JSONResponse:
     if not _is_authorized(x_webhook_secret, token, x_debug_secret):
         return _unauthorized_response()
-    contact_ids = _extract_contact_ids(payload)
-    if not contact_ids:
-        raise HTTPException(status_code=400, detail="No contact ids supplied")
+
+    contact_ids: Set[int] = set()
+    parsed_source: str | None = None
+    payload: Dict[str, Any] = {}
+
+    try:
+        json_payload = await request.json()
+    except (JSONDecodeError, ValueError, UnicodeDecodeError):
+        json_payload = None
+    except Exception:  # pragma: no cover - defensive guard
+        json_payload = None
+    if isinstance(json_payload, dict):
+        payload = json_payload
+        contact_ids.update(_extract_contact_ids(payload))
+        if contact_ids:
+            parsed_source = "json"
+
+    body = await request.body()
+    if not contact_ids and body:
+        form = parse_qs(body.decode("utf-8", errors="ignore"), keep_blank_values=True)
+        contact_ids.update(_extract_contact_ids_from_form(form))
+        if contact_ids:
+            parsed_source = "form"
+
+    if contact_ids:
+        logger.info("webhook.parsed", count=len(contact_ids), source=parsed_source)
+    else:
+        logger.warning(
+            "webhook.empty_payload",
+            content_type=(request.headers.get("content-type", "")[:50]),
+            body_length=len(body),
+        )
+        return JSONResponse(content={"queued": [], "warning": "no_contact_ids_parsed"})
 
     queued: List[int] = []
-    for contact_id in contact_ids:
+    event_payload: Dict[str, Any] = payload if parsed_source == "json" else {}
+    for contact_id in sorted(contact_ids):
         enqueue_contact(contact_id)
         queued.append(contact_id)
-        _record_webhook_event(_guess_event_name(payload, contact_id), contact_id)
+        _record_webhook_event(_guess_event_name(event_payload, contact_id), contact_id)
 
     logger.info("webhook.queued", count=len(queued), ids=queued)
     pending_sync_worker.wake()
