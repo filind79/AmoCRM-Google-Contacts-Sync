@@ -1,4 +1,5 @@
 import pytest
+from types import SimpleNamespace
 from httpx import ASGITransport, AsyncClient
 
 from app.config import settings
@@ -42,16 +43,24 @@ async def test_webhook_enqueues_and_processes(monkeypatch):
     def fake_extract(contact):  # noqa: D401
         return {"name": contact.get("name"), "emails": [], "phones": []}
 
-    async def fake_upsert(amo_contact_id: int, data):  # noqa: D401, ARG001
-        processed.append(amo_contact_id)
-        return {"resourceName": f"people/{amo_contact_id}", "action": "update"}
+    class DummyEngine:
+        def __init__(self):
+            pass
+
+        async def plan(self, payload):  # noqa: D401
+            return SimpleNamespace(contact=payload)
+
+        async def apply(self, plan):  # noqa: D401
+            amo_contact_id = plan.contact["id"]
+            processed.append(amo_contact_id)
+            return SimpleNamespace(action="updated", resource_name=f"people/{amo_contact_id}")
+
+        def close(self):  # noqa: D401
+            return None
 
     monkeypatch.setattr("app.pending_sync_worker.get_contact", fake_get_contact)
     monkeypatch.setattr("app.pending_sync_worker.extract_name_and_fields", fake_extract)
-    monkeypatch.setattr(
-        "app.pending_sync_worker.upsert_contact_by_external_id",
-        fake_upsert,
-    )
+    monkeypatch.setattr("app.pending_sync_worker.SyncEngine", DummyEngine)
 
     app = create_app()
     transport = ASGITransport(app=app)
@@ -87,13 +96,24 @@ async def test_webhook_supports_legacy_payload(monkeypatch):
     def fake_extract(contact):  # noqa: D401
         return {"name": contact.get("name"), "emails": [], "phones": []}
 
-    async def fake_upsert(amo_contact_id: int, data):  # noqa: D401, ARG001
-        collected.append(amo_contact_id)
-        return {"resourceName": f"people/{amo_contact_id}"}
+    class DummyEngine:
+        def __init__(self):
+            pass
+
+        async def plan(self, payload):  # noqa: D401
+            return SimpleNamespace(contact=payload)
+
+        async def apply(self, plan):  # noqa: D401
+            amo_contact_id = plan.contact["id"]
+            collected.append(amo_contact_id)
+            return SimpleNamespace(action="created", resource_name=f"people/{amo_contact_id}")
+
+        def close(self):  # noqa: D401
+            return None
 
     monkeypatch.setattr("app.pending_sync_worker.get_contact", fake_get_contact)
     monkeypatch.setattr("app.pending_sync_worker.extract_name_and_fields", fake_extract)
-    monkeypatch.setattr("app.pending_sync_worker.upsert_contact_by_external_id", fake_upsert)
+    monkeypatch.setattr("app.pending_sync_worker.SyncEngine", DummyEngine)
 
     app = create_app()
     transport = ASGITransport(app=app)

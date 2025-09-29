@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from app.debug import require_debug_secret
 from app.integrations import google_client
 from app.services.match import MatchKeys, normalize_phone
-from app.services.sync_apply import GoogleApplyService
+from app.services.sync_engine import SyncEngine
 from app.storage import get_link
 
 
@@ -22,7 +22,7 @@ async def merge_by_phone(
     normalized = normalize_phone(phone)
     if not normalized:
         raise HTTPException(status_code=400, detail="Invalid phone")
-    service = GoogleApplyService()
+    service = SyncEngine()
     try:
         keys = MatchKeys(phones={normalized}, emails=set())
         result = await service.merge_candidates(keys)
@@ -37,7 +37,7 @@ async def merge_by_amo(
     id: int = Query(..., description="AmoCRM contact identifier"),
     _=Depends(require_debug_secret),
 ) -> Dict[str, Any]:
-    service = GoogleApplyService()
+    service = SyncEngine()
     try:
         link = get_link(service.db_session, str(id))
         if not link:

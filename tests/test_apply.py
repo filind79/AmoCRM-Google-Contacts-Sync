@@ -1,8 +1,11 @@
+from types import SimpleNamespace
+
 from fastapi.testclient import TestClient
 from app import amocrm
 from app.google_auth import GoogleAuthError
 from app.google_people import GoogleRateLimitError
-from app.services.sync_apply import MissingEtagError, ProcessResult
+from app.services.sync_apply import ProcessResult
+from app.services.sync_engine import RecoverableSyncError
 
 
 def create(monkeypatch, secret: str | None = None):
@@ -36,20 +39,24 @@ def test_apply_upserts(monkeypatch):
 
     instances: list[object] = []
 
-    class DummyService:
+    class DummyEngine:
         def __init__(self):
             self.calls: list[int] = []
             instances.append(self)
 
-        async def process_contact(self, contact):  # noqa: ANN001
+        async def plan(self, contact):  # noqa: ANN001
             amo_id = contact["id"]
             self.calls.append(amo_id)
+            return SimpleNamespace(contact=contact)
+
+        async def apply(self, plan):  # noqa: ANN001
+            amo_id = plan.contact["id"]
             return results[amo_id]
 
         def close(self):  # noqa: D401
             return None
 
-    monkeypatch.setattr(sync_module, "GoogleApplyService", DummyService)
+    monkeypatch.setattr(sync_module, "SyncEngine", DummyEngine)
 
     app = create(monkeypatch, "s")
     with TestClient(app) as client:
@@ -75,17 +82,20 @@ def test_apply_missing_etag(monkeypatch):
         return [{"id": 1, "name": "a", "emails": ["a@example.com"], "phones": []}]
 
     monkeypatch.setattr(sync_module, "fetch_amo_contacts", fake_fetch_amo)
-    class DummyService:
+    class DummyEngine:
         def __init__(self):
             pass
 
-        async def process_contact(self, contact):  # noqa: ANN001
-            raise MissingEtagError("people/1")
+        async def plan(self, contact):  # noqa: ANN001
+            raise RecoverableSyncError("missing_etag")
+
+        async def apply(self, plan):  # noqa: ANN001
+            raise RecoverableSyncError("missing_etag")
 
         def close(self):  # noqa: D401
             return None
 
-    monkeypatch.setattr(sync_module, "GoogleApplyService", DummyService)
+    monkeypatch.setattr(sync_module, "SyncEngine", DummyEngine)
 
     app = create(monkeypatch, "s")
     with TestClient(app) as client:
@@ -110,21 +120,27 @@ def test_apply_rate_limited(monkeypatch):
 
     monkeypatch.setattr(sync_module, "fetch_amo_contacts", fake_fetch_amo)
 
-    class DummyService:
+    class DummyEngine:
         def __init__(self):
             self.calls: list[int] = []
 
-        async def process_contact(self, contact):  # noqa: ANN001
+        async def plan(self, contact):  # noqa: ANN001
             amo_id = contact["id"]
             if amo_id == 1:
                 self.calls.append(amo_id)
+                return SimpleNamespace(contact=contact)
+            raise GoogleRateLimitError(12)
+
+        async def apply(self, plan):  # noqa: ANN001
+            amo_id = plan.contact["id"]
+            if amo_id == 1:
                 return ProcessResult("created", "people/1")
             raise GoogleRateLimitError(12)
 
         def close(self):  # noqa: D401
             return None
 
-    monkeypatch.setattr(sync_module, "GoogleApplyService", DummyService)
+    monkeypatch.setattr(sync_module, "SyncEngine", DummyEngine)
 
     app = create(monkeypatch, "s")
     with TestClient(app) as client:
@@ -290,17 +306,20 @@ def test_apply_skips_none_custom_fields_contacts_no_crash(monkeypatch):
 
     monkeypatch.setattr(sync_module, "fetch_amo_contacts", fake_fetch)
 
-    class DummyService:
+    class DummyEngine:
         def __init__(self):
             pass
 
-        async def process_contact(self, contact):  # noqa: ANN001
-            return ProcessResult("created", f"people/{contact['id']}")
+        async def plan(self, contact):  # noqa: ANN001
+            return SimpleNamespace(contact=contact)
+
+        async def apply(self, plan):  # noqa: ANN001
+            return ProcessResult("created", f"people/{plan.contact['id']}")
 
         def close(self):  # noqa: D401
             return None
 
-    monkeypatch.setattr(sync_module, "GoogleApplyService", DummyService)
+    monkeypatch.setattr(sync_module, "SyncEngine", DummyEngine)
 
     app = create(monkeypatch, "s")
     with TestClient(app) as client:

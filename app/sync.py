@@ -12,7 +12,7 @@ from fastapi import HTTPException
 from app import amocrm, google_people
 from app.core.config import get_settings
 from app.google_people import GoogleRateLimitError
-from app.services.sync_apply import GoogleApplyService, MissingEtagError
+from app.services.sync_engine import RecoverableSyncError, SyncEngine
 from app.utils import normalize_email, normalize_phone, unique
 
 logger = logging.getLogger(__name__)
@@ -346,7 +346,7 @@ async def apply_contacts_to_google(
         google_people.reset_metrics(token)
         raise
 
-    service = GoogleApplyService()
+    service = SyncEngine()
     try:
         created_samples: List[Dict[str, Any]] = []
         updated_samples: List[Dict[str, Any]] = []
@@ -370,7 +370,8 @@ async def apply_contacts_to_google(
                 "emails": contact.get("emails", []),
             }
             try:
-                result = await service.process_contact(contact)
+                plan = await service.plan(contact)
+                result = await service.apply(plan)
             except GoogleRateLimitError as e:
                 payload = {
                     "status": "rate_limited",
@@ -387,13 +388,12 @@ async def apply_contacts_to_google(
                     "pages_amo": metrics.get("pages_amo", 0),
                 }
                 raise GoogleRateLimitError(e.retry_after, payload) from None
-            except MissingEtagError as exc:
+            except RecoverableSyncError as exc:
                 errors.append(
                     {
                         "amo_id": contact.get("id"),
-                        "reason": "missing_etag",
-                        "message": "Google contact missing etag",
-                        "resource_name": exc.resource_name,
+                        "reason": (exc.reason or "sync_error"),
+                        "message": str(exc),
                     }
                 )
                 continue
@@ -431,20 +431,22 @@ async def apply_contacts_to_google(
                 created += 1
                 if len(created_samples) < 5:
                     created_samples.append(sample)
-            elif result.action == "updated":
+            elif result.action in {"updated", "merged"}:
                 updated += 1
                 if len(updated_samples) < 5:
                     updated_samples.append(sample)
             elif result.action == "skipped":
+                reason_list = result.reason or []
+                if any(r == "no_valid_keys" for r in reason_list):
+                    skipped_invalid_phone += 1
+                    sample["reason"] = reason_list
+                    if len(invalid_samples) < 5:
+                        invalid_samples.append(sample)
+                    continue
                 skip_existing += 1
-                sample["reason"] = result.reason or []
+                sample["reason"] = reason_list
                 if len(skipped_samples) < 5:
                     skipped_samples.append(sample)
-            elif result.action == "skipped_invalid_phone":
-                skipped_invalid_phone += 1
-                sample["reason"] = result.reason or []
-                if len(invalid_samples) < 5:
-                    invalid_samples.append(sample)
 
         duration_ms = int((time.perf_counter() - started) * 1000)
 
