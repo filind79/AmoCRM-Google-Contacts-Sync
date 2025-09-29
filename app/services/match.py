@@ -63,6 +63,26 @@ class MatchCandidate:
                 return True
         return False
 
+    def has_external_id(self, *, amo_contact_id: Optional[int] = None) -> bool:
+        entries = self.person.get("externalIds") or []
+        if not isinstance(entries, list):
+            return False
+        target = str(amo_contact_id) if amo_contact_id is not None else None
+        found_any = False
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("type") != "amo_id":
+                continue
+            value = entry.get("value")
+            if target is not None:
+                if value == target:
+                    return True
+                continue
+            if value:
+                found_any = True
+        return found_any if target is None else False
+
 
 def normalize_phone(phone: str) -> Optional[str]:
     return _normalize_phone(phone)
@@ -201,11 +221,23 @@ def choose_primary(candidates: Sequence[MatchCandidate], keys: MatchKeys, contex
         ordered = exact_matches
         reason_parts.append("exact_phone")
 
+    amo_matches: Sequence[MatchCandidate]
+    if context.amo_contact_id is not None:
+        amo_matches = [
+            candidate
+            for candidate in ordered
+            if candidate.has_external_id(amo_contact_id=context.amo_contact_id)
+        ]
+    else:
+        amo_matches = [candidate for candidate in ordered if candidate.has_external_id()]
+    if amo_matches:
+        ordered = amo_matches
+        reason_parts.append("external_id")
+
     group_matches = [candidate for candidate in ordered if candidate.in_group(context.group_resource_name)]
-    if context.group_resource_name:
-        if group_matches:
-            ordered = group_matches
-            reason_parts.append("group")
+    if context.group_resource_name and group_matches:
+        ordered = group_matches
+        reason_parts.append("group")
 
     if context.mapped_resource_name:
         mapped = [c for c in ordered if c.resource_name == context.mapped_resource_name]
