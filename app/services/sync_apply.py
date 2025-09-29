@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -39,12 +38,22 @@ class ProcessResult:
 
 class GoogleApplyService:
     def __init__(self) -> None:
-        self.group_resource_name = settings.google_contact_group_name or None
+        self.group_name = (settings.google_contact_group_name or "").strip()
+        self.group_resource_name: Optional[str] = None
         self.auto_merge = settings.auto_merge_duplicates
         self.db_session = get_db_session()
 
     def close(self) -> None:
         self.db_session.close()
+
+    async def _ensure_group(self) -> Optional[str]:
+        if not self.group_name:
+            return None
+        if self.group_resource_name:
+            return self.group_resource_name
+        resource = await google_client.ensure_group(self.group_name)
+        self.group_resource_name = resource or None
+        return self.group_resource_name
 
     async def process_contact(self, contact: Dict[str, Any]) -> ProcessResult:
         amo_id = contact.get("id")
@@ -62,6 +71,7 @@ class GoogleApplyService:
         link = get_link(self.db_session, str(amo_id)) if amo_id is not None else None
         mapped_resource = link.google_resource_name if link else None
 
+        await self._ensure_group()
         candidates = await self._find_candidates(keys, mapped_resource)
         context = MatchContext(
             amo_contact_id=amo_id,
@@ -167,6 +177,7 @@ class GoogleApplyService:
         amo_contact_id: Optional[int] = None,
         mapped_resource: Optional[str] = None,
     ) -> Dict[str, Any]:
+        await self._ensure_group()
         candidates = await self._find_candidates(keys, mapped_resource)
         context = MatchContext(
             amo_contact_id=amo_contact_id,
