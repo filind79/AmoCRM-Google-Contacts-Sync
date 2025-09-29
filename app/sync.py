@@ -10,7 +10,7 @@ import httpx
 from fastapi import HTTPException
 
 from app import amocrm, google_people
-from app.config import settings
+from app.core.config import get_settings
 from app.google_people import GoogleRateLimitError
 from app.utils import normalize_email, normalize_phone, unique
 
@@ -25,10 +25,14 @@ async def fetch_amo_contacts(
     amo_ids: Optional[List[int]] = None,
     stats: Optional[Dict[str, int]] = None,
 ) -> List[Dict[str, Any]]:
-    token = settings.amo_long_lived_token
-    base_url = settings.amo_base_url.rstrip("/")
-    if not token or not base_url:
-        raise HTTPException(status_code=500, detail="AmoCRM settings missing")
+    try:
+        token = await amocrm.get_access_token()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    settings_snapshot = get_settings(validate=False)
+    base_url = (settings_snapshot.get("amo_base_url") or "").rstrip("/")
+    if not base_url:
+        raise HTTPException(status_code=500, detail="AmoCRM base URL missing")
     url = f"{base_url}/api/v4/contacts"
     headers = {"Authorization": f"Bearer {token}"}
     request_limit = limit

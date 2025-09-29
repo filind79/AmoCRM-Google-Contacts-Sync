@@ -49,6 +49,7 @@ Available endpoints:
 | `GET /debug/db` | Database connectivity and number of stored tokens |
 | `GET /debug/google` | Google token status: `has_token`, `expires_at`, `scopes` |
 | `GET /debug/amo` | AmoCRM configuration: `base_url`, `auth_mode`, `is_ready` |
+| `GET /debug/config` | Snapshot of AmoCRM auth mode and whether the required secrets are present |
 | `GET /debug/ping-google` | Quick Google People API probe with latency and retry hints |
 
 Example:
@@ -64,6 +65,21 @@ fields. When the service is rate limited it returns HTTP 200 with
 A missing/expired token yields HTTP 401 with the usual
 `{"detail": "Google auth required", "auth_url": "/auth/google/start"}`
 payload.
+
+## AmoCRM authentication
+
+Set `AMO_AUTH_MODE` to either `llt` (long-lived token) or `api_key`. This value is
+the single source of truth for the AmoCRM auth mode: no automatic fallbacks are
+performed. Depending on the mode you must provide **exactly one** of the
+following secrets via environment variables:
+
+* `AMO_LONG_LIVED_TOKEN` when `AMO_AUTH_MODE=llt`.
+* `AMO_API_KEY` when `AMO_AUTH_MODE=api_key`.
+
+Use `/debug/config` (guarded by `DEBUG_SECRET`) to verify which mode the service
+detected and whether the corresponding secret is available. At application
+startup the current configuration is logged in a sanitized form to aid
+troubleshooting.
 
 ## Sync API
 

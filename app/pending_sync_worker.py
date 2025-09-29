@@ -114,6 +114,23 @@ class PendingSyncWorker:
                 delay=delay,
                 attempts=record.attempts,
             )
+        except RuntimeError as exc:
+            message = str(exc)
+            if "AmoCRM" in message and "missing" in message:
+                self._fail_permanently(
+                    session,
+                    record,
+                    reason="amo_auth_missing",
+                    detail=message,
+                )
+                logger.error(
+                    "pending_sync.dead_letter",
+                    contact_id=contact_id,
+                    reason="amo_auth_missing",
+                    detail=message,
+                )
+                return
+            raise
         except Exception as exc:  # pragma: no cover - defensive logging
             delay = self._retry_delay(record.attempts + 1)
             self._schedule_retry(session, record, delay, exc.__class__.__name__)
@@ -140,6 +157,23 @@ class PendingSyncWorker:
         retry_delay = max(1, delay_seconds)
         record.next_attempt_at = datetime.utcnow() + timedelta(seconds=retry_delay)
         record.last_error = error
+        record.updated_at = datetime.utcnow()
+        session.commit()
+
+    def _fail_permanently(
+        self,
+        session,
+        record: PendingSync,
+        *,
+        reason: str,
+        detail: str | None = None,
+    ) -> None:
+        record.attempts += 1
+        record.next_attempt_at = datetime.utcnow() + timedelta(days=3650)
+        error_text = reason
+        if detail:
+            error_text = f"{reason}:{detail}"
+        record.last_error = error_text[:255]
         record.updated_at = datetime.utcnow()
         session.commit()
 
