@@ -66,7 +66,9 @@ def extract_name_and_fields(contact: Dict[str, Any]) -> Dict[str, Any]:
                 continue
             value = v.get("value")
             if code == "PHONE" and value:
-                phones.append(normalize_phone(value))
+                normalized_phone = normalize_phone(value)
+                if normalized_phone:
+                    phones.append(normalized_phone)
             elif code == "EMAIL" and value:
                 emails.append(normalize_email(value))
     return {"name": name, "phones": phones, "emails": emails}

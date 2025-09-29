@@ -9,6 +9,8 @@ def create(monkeypatch, secret: str | None = None):
 
     if secret is not None:
         monkeypatch.setattr(settings, "debug_secret", secret)
+    monkeypatch.setenv("AMO_AUTH_MODE", "api_key")
+    monkeypatch.setenv("AMO_API_KEY", "dummy")
     from app.main import create_app
 
     return create_app()
