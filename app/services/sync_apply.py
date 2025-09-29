@@ -57,6 +57,13 @@ class GoogleApplyService:
         raw_phones = contact.get("phones", []) or []
         keys = MatchKeys.from_raw(raw_phones, raw_emails)
 
+        if not keys:
+            logger.info(
+                "apply.skipped_invalid_keys",
+                extra={"amo_contact_id": amo_id},
+            )
+            return ProcessResult("skipped_invalid_phone", None, reason=["no_valid_keys"])
+
         link = get_link(self.db_session, str(amo_id)) if amo_id is not None else None
         mapped_resource = link.google_resource_name if link else None
 
@@ -280,10 +287,12 @@ class GoogleApplyService:
         else:
             payload.pop("names", None)
 
-        payload["externalIds"] = [
-            {"value": str(contact.get("id")), "type": "AMOCRM"}
-        ]
-        update_fields.add("externalIds")
+        amo_contact_id = contact.get("id")
+        if amo_contact_id is not None:
+            amo_value = str(amo_contact_id)
+            payload["externalIds"] = [{"value": amo_value, "type": "amo_id"}]
+            payload["clientData"] = [{"key": "amo_id", "value": amo_value}]
+            update_fields.update({"externalIds", "clientData"})
 
         etag = primary.person.get("etag")
         if not etag:

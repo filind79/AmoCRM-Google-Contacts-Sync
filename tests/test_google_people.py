@@ -133,7 +133,8 @@ async def test_create_contact_external_id(monkeypatch):
     await create_contact(data)
 
     assert dummy_client.payload
-    assert dummy_client.payload["externalIds"] == [{"value": "123", "type": "AMOCRM"}]
+    assert dummy_client.payload["externalIds"] == [{"value": "123", "type": "amo_id"}]
+    assert dummy_client.payload["clientData"] == [{"key": "amo_id", "value": "123"}]
 
 
 @pytest.mark.asyncio
@@ -263,7 +264,7 @@ async def test_update_contact_uses_unstructured_name_and_etag(monkeypatch):
     assert captured["json"]["names"][0]["metadata"]["primary"] is True
     assert (
         captured["params"]["updatePersonFields"]
-        == "names,phoneNumbers,emailAddresses,externalIds"
+        == "names,phoneNumbers,emailAddresses,externalIds,clientData"
     )
 
 

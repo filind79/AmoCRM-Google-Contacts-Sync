@@ -434,7 +434,9 @@ async def create_contact(data: Dict[str, Any]) -> Dict[str, Any]:
 
     external_id = data.get("external_id")
     if external_id is not None:
-        body["externalIds"] = [{"value": str(external_id), "type": "AMOCRM"}]
+        amo_value = str(external_id)
+        body["externalIds"] = [{"value": amo_value, "type": "amo_id"}]
+        body["clientData"] = [{"key": "amo_id", "value": amo_value}]
 
     phones = unique(
         [
@@ -534,13 +536,21 @@ async def update_contact(resource_name: str, etag: str, data: Dict[str, Any]) ->
             update_fields.add("phoneNumbers")
         external_id = data.get("external_id")
         if external_id is not None:
-            body["externalIds"] = [{"value": str(external_id), "type": "AMOCRM"}]
-            update_fields.add("externalIds")
+            amo_value = str(external_id)
+            body["externalIds"] = [{"value": amo_value, "type": "amo_id"}]
+            body["clientData"] = [{"key": "amo_id", "value": amo_value}]
+            update_fields.update({"externalIds", "clientData"})
         if not update_fields:
             return {}
         ordered_fields = [
             field
-            for field in ("names", "phoneNumbers", "emailAddresses", "externalIds")
+            for field in (
+                "names",
+                "phoneNumbers",
+                "emailAddresses",
+                "externalIds",
+                "clientData",
+            )
             if field in update_fields
         ]
         if ordered_fields:
