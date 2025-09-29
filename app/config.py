@@ -24,7 +24,7 @@ class Settings:
     google_client_secret: str = os.getenv("GOOGLE_CLIENT_SECRET", "")
     google_scopes: str = os.getenv("GOOGLE_SCOPES", "https://www.googleapis.com/auth/contacts")
     google_redirect_uri: str = os.getenv("GOOGLE_REDIRECT_URI", "http://localhost:8000/oauth/google/callback")
-    auto_merge_duplicates: bool = _env_bool("AUTO_MERGE_DUPLICATES", "false")
+    auto_merge_duplicates: bool = _env_bool("AUTO_MERGE_DUPLICATES", "true")
     google_contact_group_name: str = os.getenv("GOOGLE_CONTACT_GROUP_NAME", "")
 
     webhook_shared_secret: str = os.getenv("WEBHOOK_SHARED_SECRET", "")

@@ -18,8 +18,9 @@ from app.services.match import (
     normalize_phone,
     search_google_candidates,
 )
+from app.services.merge import MissingEtagError, merge_contacts
 from app.services.transform import union_fields
-from app.storage import get_link, remap_google_links, save_link
+from app.storage import get_link, save_link
 from app.storage import get_session as get_db_session
 from app.utils import parse_display_name
 
@@ -34,12 +35,6 @@ class ProcessResult:
     action: str
     resource_name: Optional[str]
     reason: Optional[List[str]] = None
-
-
-class MissingEtagError(RuntimeError):
-    def __init__(self, resource_name: str) -> None:
-        super().__init__("Google contact missing etag")
-        self.resource_name = resource_name
 
 
 class GoogleApplyService:
@@ -206,46 +201,13 @@ class GoogleApplyService:
         duplicates: Sequence[MatchCandidate],
         keys: MatchKeys,
     ) -> MatchCandidate:
-        limited = list(duplicates)[:5]
-        duplicate_names = [c.resource_name for c in limited]
-        logger.info(
-            "merge.start",
-            extra={
-                "primary": primary.resource_name,
-                "duplicates": duplicate_names,
-            },
+        return await merge_contacts(
+            primary,
+            duplicates,
+            keys=keys,
+            group_resource_name=self.group_resource_name,
+            db_session=self.db_session,
         )
-        logger.info(
-            "merge.primary",
-            extra={"resource_name": primary.resource_name},
-        )
-        payload = union_fields(
-            primary.person,
-            [c.person for c in limited],
-            ensure_group=self.group_resource_name,
-        )
-        update_fields = set(payload.keys())
-        etag = primary.person.get("etag")
-        if not etag:
-            raise MissingEtagError(primary.resource_name)
-        updated = await google_client.update_contact(
-            primary.resource_name,
-            payload,
-            update_person_fields=sorted(update_fields),
-            etag=etag,
-        )
-        logger.info(
-            "merge.updated",
-            extra={"resource_name": primary.resource_name, "fields": sorted(update_fields)},
-        )
-        await google_client.batch_delete_contacts(duplicate_names)
-        logger.info(
-            "merge.deleted",
-            extra={"resource_names": duplicate_names},
-        )
-        remap_google_links(self.db_session, primary.resource_name, duplicate_names)
-        refreshed = build_candidate_from_person(updated, keys)
-        return refreshed or primary
 
     async def _update_contact(
         self, primary: MatchCandidate, contact: Dict[str, Any], keys: MatchKeys
