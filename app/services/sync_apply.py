@@ -73,45 +73,78 @@ class GoogleApplyService:
             group_resource_name=self.group_resource_name,
             mapped_resource_name=mapped_resource,
         )
-        primary = choose_primary(candidates, keys, context) if candidates else None
 
-        duplicates: List[MatchCandidate] = []
-        if primary:
-            duplicates = [c for c in candidates if c.resource_name != primary.resource_name]
-            if duplicates and self.auto_merge:
-                primary = await self._merge_duplicates(primary, duplicates, keys)
-                duplicates = []
-        elif not candidates:
-            # Preflight before creation
-            preflight = await self._find_candidates(keys, mapped_resource)
-            if preflight:
+        handled = await self._handle_candidates(
+            candidates,
+            keys=keys,
+            context=context,
+            contact=contact,
+        )
+        if handled:
+            result, primary = handled
+            if amo_id is not None:
+                save_link(
+                    self.db_session,
+                    str(amo_id),
+                    result.resource_name or primary.resource_name,
+                )
+            return result
+
+        preflight_candidates: List[MatchCandidate] = []
+        if not candidates:
+            preflight_candidates = await self._find_candidates(keys, mapped_resource)
+        if preflight_candidates:
+            resource_names = [c.resource_name for c in preflight_candidates]
+            handled = await self._handle_candidates(
+                preflight_candidates,
+                keys=keys,
+                context=context,
+                contact=contact,
+            )
+            if handled:
+                result, primary = handled
                 logger.info(
                     "apply.preflight_switched_to_update",
                     extra={
                         "amo_contact_id": amo_id,
-                        "resource_name": [c.resource_name for c in preflight],
+                        "resource_name": resource_names,
                     },
                 )
-                primary = choose_primary(preflight, keys, context)
-                candidates = preflight
-                duplicates = [
-                    c for c in preflight if primary and c.resource_name != primary.resource_name
-                ]
-                if primary and duplicates and self.auto_merge:
-                    primary = await self._merge_duplicates(primary, duplicates, keys)
-                    duplicates = []
-
-        if primary:
-            result = await self._update_contact(primary, contact, keys)
-            if amo_id is not None:
-                save_link(self.db_session, str(amo_id), result.resource_name or primary.resource_name)
-            return result
+                if amo_id is not None:
+                    save_link(
+                        self.db_session,
+                        str(amo_id),
+                        result.resource_name or primary.resource_name,
+                    )
+                return result
 
         # No match -> create
         result = await self._create_contact(contact, keys)
         if amo_id is not None and result.resource_name:
             save_link(self.db_session, str(amo_id), result.resource_name)
         return result
+
+    async def _handle_candidates(
+        self,
+        candidates: Sequence[MatchCandidate],
+        *,
+        keys: MatchKeys,
+        context: MatchContext,
+        contact: Dict[str, Any],
+    ) -> Optional[tuple[ProcessResult, MatchCandidate]]:
+        if not candidates:
+            return None
+
+        primary = choose_primary(candidates, keys, context)
+        if not primary:
+            return None
+
+        duplicates = [c for c in candidates if c.resource_name != primary.resource_name]
+        if duplicates and self.auto_merge:
+            primary = await self._merge_duplicates(primary, duplicates, keys)
+
+        result = await self._update_contact(primary, contact, keys)
+        return result, primary
 
     async def _find_candidates(
         self, keys: MatchKeys, mapped_resource: Optional[str]
