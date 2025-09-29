@@ -129,3 +129,24 @@ http \
 
 Run `dry-run` in `fast` mode first; switch to `mode=full` only when the quick
 preview suggests mismatches that require deeper investigation.
+
+## Автосинк через вебхуки amoCRM
+
+Поддерживаемые форматы: JSON (для ручного теста) и application/x-www-form-urlencoded
+(стандарт amoCRM).
+
+Ручной тест (JSON):
+
+```bash
+curl -sS -X POST "$BASE/webhook/amo?token=$WEBHOOK_SECRET" \
+  -H 'Content-Type: application/json' \
+  -d '{"event":"contact_updated","contact_id": 90959743}'
+```
+
+Эмуляция amoCRM (form-urlencoded):
+
+```bash
+curl -sS -X POST "$BASE/webhook/amo?token=$WEBHOOK_SECRET" \
+  -H 'Content-Type: application/x-www-form-urlencoded' \
+  --data-raw 'contacts[add][0][id]=101&contacts[update][0][id]=202'
+```
