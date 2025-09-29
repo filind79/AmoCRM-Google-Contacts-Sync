@@ -113,7 +113,9 @@ def test_dry_run_direction_amo(monkeypatch):
         data = resp.json()
         assert data["summary"]["amo"]["fetched"] == 1
         assert data["summary"]["google"]["fetched"] == 0
-        assert data["summary"]["actions"] == {"amo_to_google": {"create": 1, "update": 0}}
+        assert data["summary"]["actions"] == {
+            "amo_to_google": {"create": 1, "update": 0, "skipped_invalid_phone": 0}
+        }
         assert len(data["samples"]["amo_only"]) == 1
         assert "google_only" not in data["samples"]
         assert data["debug"]["counters"]["requests"] == 0

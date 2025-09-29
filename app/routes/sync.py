@@ -203,6 +203,7 @@ async def contacts_dry_run(
         samples: dict[str, object] = {"updates_preview": compare["samples"]["updates_preview"]}
         if direction in {"both", "amo"}:
             samples["amo_only"] = compare["samples"]["amo_only"]
+            samples["skipped_invalid_phone"] = compare["samples"]["skipped_invalid_phone"]
         if direction in {"both", "google"}:
             samples["google_only"] = compare["samples"]["google_only"]
 

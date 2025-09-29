@@ -256,12 +256,12 @@ def dry_run_compare(
         "amo": {
             "fetched": len(amo_contacts),
             "with_keys": len(amo_with_keys),
-            "skipped_no_keys": len(amo_no_keys),
+            "skipped_invalid_phone": len(amo_no_keys),
         },
         "google": {
             "fetched": len(google_contacts),
             "with_keys": len(google_with_keys),
-            "skipped_no_keys": len(google_no_keys),
+            "skipped_invalid_phone": len(google_no_keys),
         },
         "match": {
             "pairs": len(pairs),
@@ -272,6 +272,9 @@ def dry_run_compare(
             "amo_to_google": {
                 "create": len(amo_only) if direction in ("both", "amo-to-google") else 0,
                 "update": amo_to_google_updates if direction in ("both", "amo-to-google") else 0,
+                "skipped_invalid_phone": len(amo_no_keys)
+                if direction in ("both", "amo-to-google")
+                else 0,
             },
             "google_to_amo": {
                 "create": len(google_only) if direction in ("both", "google-to-amo") else 0,
@@ -282,6 +285,7 @@ def dry_run_compare(
             "amo_only": amo_only[:5],
             "google_only": google_only[:5],
             "updates_preview": updates_preview[:5],
+            "skipped_invalid_phone": amo_no_keys[:5],
         },
     }
     return result
@@ -347,10 +351,12 @@ async def apply_contacts_to_google(
         created_samples: List[Dict[str, Any]] = []
         updated_samples: List[Dict[str, Any]] = []
         skipped_samples: List[Dict[str, Any]] = []
+        invalid_samples: List[Dict[str, Any]] = []
         errors: List[Dict[str, Any]] = []
         created = 0
         updated = 0
         skip_existing = 0
+        skipped_invalid_phone = 0
         processed = 0
 
         for contact in amo_contacts:
@@ -434,6 +440,11 @@ async def apply_contacts_to_google(
                 sample["reason"] = result.reason or []
                 if len(skipped_samples) < 5:
                     skipped_samples.append(sample)
+            elif result.action == "skipped_invalid_phone":
+                skipped_invalid_phone += 1
+                sample["reason"] = result.reason or []
+                if len(invalid_samples) < 5:
+                    invalid_samples.append(sample)
 
         duration_ms = int((time.perf_counter() - started) * 1000)
 
@@ -444,10 +455,12 @@ async def apply_contacts_to_google(
             "created": created,
             "updated": updated,
             "skip_existing": skip_existing,
+            "skipped_invalid_phone": skipped_invalid_phone,
             "samples": {
                 "created": created_samples,
                 "updated": updated_samples,
                 "skip_existing": skipped_samples,
+                "skipped_invalid_phone": invalid_samples,
             },
             "errors": errors,
             "duration_ms": duration_ms,

@@ -14,10 +14,19 @@ def test_dry_run_compare():
         {"resourceName": "people/4", "name": "NoKey", "emails": [], "phones": []},
     ]
     result = dry_run_compare(amo_contacts, google_contacts, "both")
-    assert result["amo"] == {"fetched": 3, "with_keys": 1, "skipped_no_keys": 2}
-    assert result["google"] == {"fetched": 4, "with_keys": 2, "skipped_no_keys": 2}
+    assert result["amo"] == {
+        "fetched": 3,
+        "with_keys": 1,
+        "skipped_invalid_phone": 2,
+    }
+    assert result["google"] == {
+        "fetched": 4,
+        "with_keys": 2,
+        "skipped_invalid_phone": 2,
+    }
     assert result["match"] == {"pairs": 1, "amo_only": 0, "google_only": 1}
     assert result["actions"]["amo_to_google"]["create"] == 0
     assert result["actions"]["amo_to_google"]["update"] == 1
+    assert result["actions"]["amo_to_google"]["skipped_invalid_phone"] == 2
     assert result["actions"]["google_to_amo"]["create"] == 1
     assert result["actions"]["google_to_amo"]["update"] == 1
