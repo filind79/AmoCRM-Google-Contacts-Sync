@@ -6,8 +6,12 @@ import pytest
 
 from app import google_people
 from app.auth import auth_google_callback
-from app.google_auth import get_valid_google_access_token
-from app.storage import Token, get_session, save_token, init_db
+from app.google_auth import (
+    GoogleAuthError,
+    get_google_auth_state,
+    get_valid_google_access_token,
+)
+from app.storage import Token, get_session, init_db, save_token
 
 
 class DummyResponse:
@@ -37,11 +41,32 @@ def test_token_refresh(monkeypatch):
 
     token = asyncio.run(get_valid_google_access_token(session))
     assert token == "new"
+    state = get_google_auth_state(session)
+    assert state.auth_status == "ok"
     session.close()
 
     session = get_session()
     stored = session.get(Token, 1)
     assert stored.access_token == "new"
+    session.close()
+
+
+def test_refresh_failure_marks_needs_reauth(monkeypatch):
+    init_db()
+    session = get_session()
+    expiry = datetime.utcnow() - timedelta(seconds=10)
+    save_token(session, "google", "old", "refresh", expiry, scopes="")
+
+    def fake_post(url, data, timeout):  # noqa: ARG001
+        return DummyResponse(400)
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    with pytest.raises(GoogleAuthError):
+        asyncio.run(get_valid_google_access_token(session))
+
+    state = get_google_auth_state(session)
+    assert state.auth_status == "needs_reauth"
     session.close()
 
 
@@ -152,5 +177,7 @@ async def test_google_callback_reuses_refresh_token(monkeypatch):
     stored = session.query(Token).filter(Token.system == "google").one()
     assert stored.access_token == "new"
     assert stored.refresh_token == "refresh"
+    state = get_google_auth_state(session)
+    assert state.auth_status == "ok"
     session.close()
 

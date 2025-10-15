@@ -6,6 +6,7 @@ from fastapi import APIRouter
 from fastapi.responses import RedirectResponse
 
 from app.config import settings
+from app.google_auth import mark_google_auth_ready
 from app.storage import get_session, get_token, save_token
 
 router = APIRouter()
@@ -57,6 +58,7 @@ async def auth_google_callback(code: str):
             expiry=expiry,
             scopes=settings.google_scopes,
         )
+        mark_google_auth_ready(session)
     finally:
         session.close()
     return {"status": "ok"}

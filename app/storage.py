@@ -65,6 +65,16 @@ class Token(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class Setting(Base):
+    __tablename__ = "settings"
+
+    id = Column(Integer, primary_key=True)
+    key = Column(String, unique=True, nullable=False)
+    value = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class PendingSync(Base):
     __tablename__ = "pending_sync"
 
@@ -104,6 +114,32 @@ def save_token(session, system: str, access_token: str, refresh_token: str, expi
     session.commit()
     session.refresh(token)
     return token
+
+
+def get_setting(session, key: str) -> Optional[str]:
+    stmt = select(Setting).where(Setting.key == key)
+    record = session.execute(stmt).scalars().first()
+    return record.value if record else None
+
+
+def set_settings(session, values: dict[str, Optional[str]]) -> None:
+    if not values:
+        return
+    stmt = select(Setting).where(Setting.key.in_(values.keys()))
+    existing = {setting.key: setting for setting in session.execute(stmt).scalars().all()}
+    now = datetime.utcnow()
+    for key, value in values.items():
+        record = existing.get(key)
+        if record:
+            record.value = value
+            record.updated_at = now
+        else:
+            session.add(Setting(key=key, value=value, created_at=now, updated_at=now))
+    session.commit()
+
+
+def set_setting(session, key: str, value: Optional[str]) -> None:
+    set_settings(session, {key: value})
 
 def get_link(session, amo_contact_id: str) -> Optional[Link]:
     stmt = select(Link).where(Link.amo_contact_id == amo_contact_id)

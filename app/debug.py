@@ -11,7 +11,11 @@ from sqlalchemy import select
 from app.amocrm import extract_name_and_fields, get_contact
 from app.config import settings
 from app.core.config import get_settings_snapshot
-from app.google_auth import GoogleAuthError, get_valid_google_access_token
+from app.google_auth import (
+    GoogleAuthError,
+    get_google_auth_state,
+    get_valid_google_access_token,
+)
 from app.google_people import GOOGLE_API_BASE
 from app.services.sync_engine import SyncEngine
 from app.storage import Token, get_session, get_token
@@ -60,10 +64,23 @@ def debug_google(_=Depends(require_debug_secret)) -> dict[str, object]:
     session = get_session()
     try:
         token = get_token(session, "google")
+        state = get_google_auth_state(session)
+        payload: dict[str, object] = {
+            "auth_status": state.auth_status,
+            "last_refresh": state.last_refresh.isoformat().replace("+00:00", "Z")
+            if state.last_refresh
+            else None,
+            "expires_in": state.expires_in,
+            "failure_count": state.failure_count,
+        }
+        if state.last_error:
+            payload["last_error"] = state.last_error
         if not token:
-            return {"has_token": False, "expires_at": None, "scopes": None}
+            payload.update({"has_token": False, "expires_at": None, "scopes": None})
+            return payload
         expires = token.expiry.isoformat() if token.expiry else None
-        return {"has_token": True, "expires_at": expires, "scopes": token.scopes}
+        payload.update({"has_token": True, "expires_at": expires, "scopes": token.scopes})
+        return payload
     finally:
         session.close()
 
