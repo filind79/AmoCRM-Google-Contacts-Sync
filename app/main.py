@@ -8,9 +8,10 @@ from app.backfill import router as backfill_router
 from app.config import settings
 from app.core.config import get_settings_snapshot
 from app.debug import router as debug_router
+from app.google_auth import get_google_auth_state
 from app.routes.sync import router as sync_router
 from app.pending_sync_worker import pending_sync_worker
-from app.storage import init_db
+from app.storage import get_session, init_db
 from app.webhooks import router as webhook_router
 
 logger = logging.getLogger(__name__)
@@ -46,6 +47,22 @@ def create_app() -> FastAPI:
     @app.get("/health")
     async def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/status")
+    async def status() -> dict[str, object]:
+        session = get_session()
+        try:
+            state = get_google_auth_state(session)
+            return {
+                "auth_status": state.auth_status,
+                "last_refresh": state.last_refresh.isoformat().replace("+00:00", "Z")
+                if state.last_refresh
+                else None,
+                "expires_in": state.expires_in,
+                "failure_count": state.failure_count,
+            }
+        finally:
+            session.close()
 
     app.include_router(auth_router)
     app.include_router(webhook_router)

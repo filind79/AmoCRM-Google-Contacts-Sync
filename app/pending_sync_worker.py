@@ -7,6 +7,11 @@ from typing import Optional
 from loguru import logger
 
 from app.amocrm import extract_name_and_fields, get_contact
+from app.google_auth import (
+    GoogleAuthError,
+    get_valid_google_access_token,
+    google_auth_needs_reauth,
+)
 from app.google_people import GoogleRateLimitError
 from app.storage import (
     PendingSync,
@@ -25,6 +30,7 @@ class PendingSyncWorker:
         self._wake_event: asyncio.Event | None = None
         self._lock: asyncio.Lock | None = None
         self._stopping = False
+        self._refresh_task: asyncio.Task | None = None
 
     def start(self) -> None:
         if self._task and not self._task.done():
@@ -34,12 +40,15 @@ class PendingSyncWorker:
         self._lock = asyncio.Lock()
         self._stopping = False
         self._task = loop.create_task(self._run())
+        self._refresh_task = loop.create_task(self._refresh_loop())
         logger.info("pending_sync.worker_started")
 
     async def stop(self) -> None:
         self._stopping = True
         if self._wake_event:
             self._wake_event.set()
+        if self._refresh_task:
+            self._refresh_task.cancel()
         if self._task:
             try:
                 await self._task
@@ -48,6 +57,12 @@ class PendingSyncWorker:
             self._task = None
         self._wake_event = None
         self._lock = None
+        if self._refresh_task:
+            try:
+                await self._refresh_task
+            except asyncio.CancelledError:
+                pass
+            self._refresh_task = None
         logger.info("pending_sync.worker_stopped")
 
     def wake(self) -> None:
@@ -90,6 +105,9 @@ class PendingSyncWorker:
         async with lock:
             session = get_session()
             try:
+                if google_auth_needs_reauth(session):
+                    logger.warning("Skipping sync: Google authorization required")
+                    return 0
                 records = fetch_due_pending_sync(session, limit)
                 processed = 0
                 for record in records:
@@ -98,6 +116,37 @@ class PendingSyncWorker:
                 return processed
             finally:
                 session.close()
+
+    async def _refresh_loop(self) -> None:
+        interval = 12 * 60 * 60
+        try:
+            while not self._stopping:
+                session = get_session()
+                try:
+                    try:
+                        await get_valid_google_access_token(session, force_refresh=True)
+                    except GoogleAuthError as exc:
+                        logger.warning(
+                            "google.token_refresh_failed reason=%s",
+                            exc.reason,
+                        )
+                    else:
+                        logger.info("google.token_refreshed")
+                finally:
+                    session.close()
+                for _ in range(interval // 60):
+                    if self._stopping:
+                        break
+                    await asyncio.sleep(60)
+                else:
+                    remainder = interval % 60
+                    if remainder:
+                        await asyncio.sleep(remainder)
+                if self._stopping:
+                    break
+        except asyncio.CancelledError:
+            logger.debug("pending_sync.refresh_cancelled")
+            raise
 
     async def _handle_record(self, session, record: PendingSync) -> None:
         contact_id = int(record.amo_contact_id)
