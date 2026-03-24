@@ -12,7 +12,6 @@ import httpx
 from app.config import settings
 from app.core.integration_state import (
     AUTH_STATUS_NEEDS_REAUTH,
-    AUTH_STATUS_OK,
     GoogleIntegrationState,
     get_google_integration_state,
     mark_google_alert_sent,
