@@ -31,6 +31,7 @@ class PendingSyncWorker:
         self._lock: asyncio.Lock | None = None
         self._stopping = False
         self._refresh_task: asyncio.Task | None = None
+        self._auth_blocked_logged = False
 
     def start(self) -> None:
         if self._task and not self._task.done():
@@ -39,6 +40,7 @@ class PendingSyncWorker:
         self._wake_event = asyncio.Event()
         self._lock = asyncio.Lock()
         self._stopping = False
+        self._auth_blocked_logged = False
         self._task = loop.create_task(self._run())
         self._refresh_task = loop.create_task(self._refresh_loop())
         logger.info("pending_sync.worker_started")
@@ -106,8 +108,11 @@ class PendingSyncWorker:
             session = get_session()
             try:
                 if google_auth_needs_reauth(session):
-                    logger.warning("Skipping sync: Google authorization required")
+                    if not self._auth_blocked_logged:
+                        logger.warning("Google authorization required, sync postponed")
+                        self._auth_blocked_logged = True
                     return 0
+                self._auth_blocked_logged = False
                 records = fetch_due_pending_sync(session, limit)
                 processed = 0
                 for record in records:
@@ -118,7 +123,7 @@ class PendingSyncWorker:
                 session.close()
 
     async def _refresh_loop(self) -> None:
-        interval = 12 * 60 * 60
+        interval = 60 * 60
         try:
             while not self._stopping:
                 session = get_session()
@@ -127,11 +132,11 @@ class PendingSyncWorker:
                         await get_valid_google_access_token(session, force_refresh=True)
                     except GoogleAuthError as exc:
                         logger.warning(
-                            "google.token_refresh_failed reason=%s",
+                            "google_auth.refresh_failed reason=%s",
                             exc.reason,
                         )
                     else:
-                        logger.info("google.token_refreshed")
+                        logger.info("google_auth.refresh_ok")
                 finally:
                     session.close()
                 for _ in range(interval // 60):
@@ -238,6 +243,16 @@ class PendingSyncWorker:
         cap = 1800
         delay = base * (2 ** max(0, attempt - 1))
         return min(cap, delay)
+
+    def get_status(self) -> dict[str, object]:
+        running = bool(self._task and not self._task.done())
+        refresh_running = bool(self._refresh_task and not self._refresh_task.done())
+        return {
+            "running": running,
+            "refresh_loop_running": refresh_running,
+            "stopping": self._stopping,
+            "auth_blocked": self._auth_blocked_logged,
+        }
 
 
 def enqueue_contact(contact_id: int) -> None:

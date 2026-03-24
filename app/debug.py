@@ -18,7 +18,8 @@ from app.google_auth import (
 )
 from app.google_people import GOOGLE_API_BASE
 from app.services.sync_engine import SyncEngine
-from app.storage import Token, get_session, get_token
+from app.storage import Token, get_pending_sync_stats, get_session, get_token
+from app.pending_sync_worker import pending_sync_worker
 from app.webhooks import get_recent_webhook_events
 
 router = APIRouter()
@@ -67,11 +68,14 @@ def debug_google(_=Depends(require_debug_secret)) -> dict[str, object]:
         state = get_google_auth_state(session)
         payload: dict[str, object] = {
             "auth_status": state.auth_status,
-            "last_refresh": state.last_refresh.isoformat().replace("+00:00", "Z")
-            if state.last_refresh
+            "last_refresh_at": state.last_refresh_at.isoformat().replace("+00:00", "Z")
+            if state.last_refresh_at
             else None,
             "expires_in": state.expires_in,
             "failure_count": state.failure_count,
+            "last_failure_at": state.last_failure_at.isoformat().replace("+00:00", "Z")
+            if state.last_failure_at
+            else None,
         }
         if state.last_error:
             payload["last_error"] = state.last_error
@@ -81,6 +85,20 @@ def debug_google(_=Depends(require_debug_secret)) -> dict[str, object]:
         expires = token.expiry.isoformat() if token.expiry else None
         payload.update({"has_token": True, "expires_at": expires, "scopes": token.scopes})
         return payload
+    finally:
+        session.close()
+
+
+@router.get("/status")
+def debug_status(_=Depends(require_debug_secret)) -> dict[str, object]:
+    session = get_session()
+    try:
+        google_state = get_google_auth_state(session)
+        return {
+            "google_auth_status": google_state.auth_status,
+            "worker_status": pending_sync_worker.get_status(),
+            "queue_status": get_pending_sync_stats(session),
+        }
     finally:
         session.close()
 

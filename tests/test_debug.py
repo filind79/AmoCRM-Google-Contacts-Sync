@@ -92,6 +92,17 @@ def test_debug_db_query_token(monkeypatch):
         assert resp.json()["db"] == "ok"
 
 
+def test_debug_status_endpoint(monkeypatch):
+    app = _create_app(monkeypatch, "secret")
+    with TestClient(app) as client:
+        resp = client.get("/debug/status", headers={"X-Debug-Secret": "secret"})
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert "google_auth_status" in payload
+    assert "worker_status" in payload
+    assert "queue_status" in payload
+
+
 def test_debug_config_reports_auth(monkeypatch):
     _configure_amo(monkeypatch, mode="api_key", secret="api-key", base_url="https://amo.example")
     app = _create_app(monkeypatch, "secret")
@@ -438,4 +449,3 @@ def test_ping_google_profile_scope_regression(monkeypatch):
     assert payload["scopes_ok"] is True
     assert payload["can_read_connections"] is True
     assert payload["can_write_contact"] is True
-
