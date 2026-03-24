@@ -23,10 +23,6 @@ def _deduplicate_phones(persons: Sequence[Dict[str, Any]]) -> List[Dict[str, Any
             entry = {"value": normalized}
             if phone.get("type"):
                 entry["type"] = phone["type"]
-            if phone.get("metadata"):
-                entry["metadata"] = phone["metadata"]
-            if phone.get("formattedType"):
-                entry["formattedType"] = phone["formattedType"]
             merged.append(entry)
     return merged
 
@@ -48,8 +44,6 @@ def _deduplicate_emails(persons: Sequence[Dict[str, Any]]) -> List[Dict[str, Any
             entry = {"value": value}
             if email.get("type"):
                 entry["type"] = email["type"]
-            if email.get("metadata"):
-                entry["metadata"] = email["metadata"]
             merged.append(entry)
     return merged
 

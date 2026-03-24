@@ -55,6 +55,7 @@ class SyncPlan:
     group_resource_name: Optional[str] = None
     candidate_info: List[SyncCandidateInfo] = field(default_factory=list)
     preflight_blocked_create: bool = False
+    ambiguous_phone_in_amo: bool = False
 
 
 @dataclass(slots=True)
@@ -123,9 +124,26 @@ class SyncEngine:
             group_resource_name=group_resource,
             mapped_resource_name=mapped_resource,
         )
+        ambiguous_phone = bool(contact.get("ambiguous_phone_in_amo"))
+        linked_candidates: List[MatchCandidate] = []
+        if mapped_resource:
+            linked_candidates = [
+                candidate
+                for candidate in candidates
+                if candidate.resource_name == mapped_resource
+            ]
+        if not linked_candidates and amo_id is not None:
+            linked_candidates = [
+                candidate
+                for candidate in candidates
+                if candidate.has_external_id(amo_contact_id=amo_id)
+            ]
 
         preflight_blocked = bool(candidates)
-        primary = choose_primary(candidates, keys, context) if candidates else None
+        if linked_candidates:
+            primary = choose_primary(linked_candidates, keys, context)
+        else:
+            primary = choose_primary(candidates, keys, context) if candidates else None
         duplicates = (
             [c for c in candidates if primary and c.resource_name != primary.resource_name]
             if candidates
@@ -139,12 +157,27 @@ class SyncEngine:
             else:
                 action = "create"
                 reason = "no_primary"
-        elif duplicates and self.auto_merge:
+        elif ambiguous_phone and not linked_candidates:
+            logger.warning(
+                "ambiguous_phone_in_amo",
+                extra={
+                    "amo_contact_id": amo_id,
+                    "phones": sorted(keys.phones),
+                    "candidates": [c.resource_name for c in candidates],
+                },
+            )
+            action = "skip"
+            reason = "ambiguous_phone_in_amo"
+        elif duplicates and self.auto_merge and not ambiguous_phone:
             action = "merge"
             reason = "duplicates_detected"
         else:
             action = "update"
-            reason = "single_candidate" if not duplicates else "duplicates_skip_merge"
+            reason = (
+                "single_candidate"
+                if not duplicates
+                else ("ambiguous_phone_in_amo" if ambiguous_phone else "duplicates_skip_merge")
+            )
 
         info = [
             SyncCandidateInfo(
@@ -170,6 +203,7 @@ class SyncEngine:
             group_resource_name=group_resource,
             candidate_info=info,
             preflight_blocked_create=preflight_blocked and action != "create",
+            ambiguous_phone_in_amo=ambiguous_phone,
         )
 
     async def apply(self, plan: SyncPlan) -> SyncResult:
@@ -317,6 +351,38 @@ class SyncEngine:
             )
         except MissingEtagError as exc:
             raise RecoverableSyncError(f"missing_etag:{exc.resource_name}") from exc
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code != 400:
+                raise
+            logger.error(
+                "merge.failed",
+                extra={
+                    "amo_contact_id": plan.amo_contact_id,
+                    "primary": primary.resource_name,
+                    "duplicates": [c.resource_name for c in plan.duplicates],
+                    "status_code": 400,
+                    "response_text": exc.response.text,
+                },
+            )
+            updated_resource = await self._update_contact(plan, primary)
+            logger.info(
+                "merge.fallback_update",
+                extra={
+                    "amo_contact_id": plan.amo_contact_id,
+                    "resource_name": updated_resource or primary.resource_name,
+                },
+            )
+            if updated_resource:
+                try:
+                    person = await google_client.get_contact(
+                        updated_resource,
+                        person_fields=PERSON_FIELDS,
+                    )
+                except Exception:
+                    return primary
+                refreshed = build_candidate_from_person(person, plan.keys)
+                return refreshed or primary
+            return primary
         return merged_primary
 
     async def _update_contact(
@@ -443,6 +509,16 @@ class SyncEngine:
     async def _post_create_merge(
         self, plan: SyncPlan, resource_name: str
     ) -> Optional[str]:
+        if plan.ambiguous_phone_in_amo:
+            logger.warning(
+                "ambiguous_phone_in_amo",
+                extra={
+                    "amo_contact_id": plan.amo_contact_id,
+                    "resource_name": resource_name,
+                    "reason": "postcreate_merge_skipped",
+                },
+            )
+            return resource_name
         candidates = await search_google_candidates(plan.keys)
         candidate_map = {candidate.resource_name: candidate for candidate in candidates}
 

@@ -12,6 +12,143 @@ from app.storage import get_session
 _GROUP_CACHE: Dict[str, str] = {}
 _GROUP_LOCK = asyncio.Lock()
 _GROUP_CLIENT_DATA_KEY = "amo_google_sync_group"
+_WRITABLE_TOP_LEVEL_FIELDS = {
+    "addresses",
+    "biographies",
+    "birthdays",
+    "calendarUrls",
+    "clientData",
+    "emailAddresses",
+    "events",
+    "externalIds",
+    "genders",
+    "imClients",
+    "interests",
+    "locales",
+    "locations",
+    "memberships",
+    "miscKeywords",
+    "names",
+    "nicknames",
+    "occupations",
+    "organizations",
+    "phoneNumbers",
+    "relations",
+    "sipAddresses",
+    "urls",
+    "userDefined",
+}
+
+
+def _sanitize_entries(
+    entries: Any,
+    *,
+    allowed_fields: Set[str],
+) -> List[Dict[str, Any]]:
+    result: List[Dict[str, Any]] = []
+    if not isinstance(entries, list):
+        return result
+    for entry in entries:
+        if not isinstance(entry, Mapping):
+            continue
+        clean = {
+            key: value
+            for key, value in entry.items()
+            if key in allowed_fields and value is not None
+        }
+        if clean:
+            result.append(clean)
+    return result
+
+
+def sanitize_person_for_update(person: Mapping[str, Any]) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {}
+    if not isinstance(person, Mapping):
+        return payload
+
+    for field in _WRITABLE_TOP_LEVEL_FIELDS:
+        value = person.get(field)
+        if value is not None:
+            payload[field] = deepcopy(value)
+
+    payload["phoneNumbers"] = _sanitize_entries(
+        payload.get("phoneNumbers"),
+        allowed_fields={"value", "type"},
+    )
+    if not payload["phoneNumbers"]:
+        payload.pop("phoneNumbers", None)
+
+    payload["emailAddresses"] = _sanitize_entries(
+        payload.get("emailAddresses"),
+        allowed_fields={"value", "type"},
+    )
+    if not payload["emailAddresses"]:
+        payload.pop("emailAddresses", None)
+
+    payload["names"] = _sanitize_entries(
+        payload.get("names"),
+        allowed_fields={
+            "displayName",
+            "givenName",
+            "familyName",
+            "middleName",
+            "honorificPrefix",
+            "honorificSuffix",
+            "phoneticGivenName",
+            "phoneticFamilyName",
+            "phoneticMiddleName",
+            "phoneticHonorificPrefix",
+            "phoneticHonorificSuffix",
+            "unstructuredName",
+        },
+    )
+    if not payload["names"]:
+        payload.pop("names", None)
+
+    memberships: List[Dict[str, Any]] = []
+    for entry in payload.get("memberships", []) or []:
+        if not isinstance(entry, Mapping):
+            continue
+        group = entry.get("contactGroupMembership")
+        if not isinstance(group, Mapping):
+            continue
+        group_name = group.get("contactGroupResourceName")
+        if not group_name:
+            continue
+        memberships.append(
+            {
+                "contactGroupMembership": {
+                    "contactGroupResourceName": group_name,
+                }
+            }
+        )
+    if memberships:
+        payload["memberships"] = memberships
+    else:
+        payload.pop("memberships", None)
+
+    payload["biographies"] = _sanitize_entries(
+        payload.get("biographies"),
+        allowed_fields={"value", "contentType"},
+    )
+    if not payload["biographies"]:
+        payload.pop("biographies", None)
+
+    payload["externalIds"] = _sanitize_entries(
+        payload.get("externalIds"),
+        allowed_fields={"value", "type"},
+    )
+    if not payload["externalIds"]:
+        payload.pop("externalIds", None)
+
+    payload["clientData"] = _sanitize_entries(
+        payload.get("clientData"),
+        allowed_fields={"key", "value"},
+    )
+    if not payload["clientData"]:
+        payload.pop("clientData", None)
+
+    return payload
 
 
 def _normalize_update_fields(update_person_fields: Sequence[str] | str) -> Set[str]:
@@ -203,7 +340,7 @@ async def update_contact(
     try:
         headers = await _token_headers(session)
         headers["Content-Type"] = "application/json"
-        payload: MutableMapping[str, Any] = dict(body)
+        payload: MutableMapping[str, Any] = sanitize_person_for_update(body)
         payload["resourceName"] = resource_name
         if etag:
             payload["etag"] = etag
@@ -262,7 +399,7 @@ async def batch_update_contacts(
             fields.add("memberships")
         payload_contacts: Dict[str, Dict[str, Any]] = {}
         for key, data in contacts.items():
-            entry = dict(data)
+            entry = sanitize_person_for_update(data)
             if group_resource:
                 entry["memberships"] = _format_group_memberships(
                     entry.get("memberships"),

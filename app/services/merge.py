@@ -42,8 +42,6 @@ def _merge_external_ids(persons: Sequence[Dict[str, Any]]) -> List[Dict[str, Any
                 external_entry["type"] = id_type
             if value is not None:
                 external_entry["value"] = value
-            if entry.get("metadata"):
-                external_entry["metadata"] = entry["metadata"]
             merged.append(external_entry)
     return merged
 
@@ -65,7 +63,7 @@ async def merge_contacts(
         "merge.start",
         extra={"primary": primary.resource_name, "duplicates": duplicate_names},
     )
-    logger.info("merge.primary=%s", primary.resource_name)
+    logger.info("merge.primary_selected", extra={"primary": primary.resource_name})
 
     persons = [c.person for c in duplicates]
     resolved_group = group_resource_name
@@ -83,6 +81,11 @@ async def merge_contacts(
     external_ids = _merge_external_ids([primary.person, *persons])
     if external_ids:
         payload["externalIds"] = external_ids
+    payload = google_client.sanitize_person_for_update(payload)
+    logger.info(
+        "merge.payload_sanitized",
+        extra={"primary": primary.resource_name, "fields": sorted(payload.keys())},
+    )
 
     etag = primary.person.get("etag")
     if not etag:
@@ -103,7 +106,7 @@ async def merge_contacts(
     )
 
     await google_client.batch_delete_contacts(duplicate_names)
-    logger.info("merge.deleted=%s", duplicate_names)
+    logger.info("merge.deleted", extra={"duplicates": duplicate_names})
 
     remap_google_links(db_session, primary.resource_name, duplicate_names)
 
