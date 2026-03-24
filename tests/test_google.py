@@ -10,8 +10,9 @@ from app.google_auth import (
     GoogleAuthError,
     get_google_auth_state,
     get_valid_google_access_token,
+    mark_google_auth_ready,
 )
-from app.storage import Token, get_session, init_db, save_token
+from app.storage import Setting, Token, get_session, init_db, save_token
 
 
 class DummyResponse:
@@ -28,11 +29,18 @@ class DummyResponse:
             raise httpx.HTTPStatusError("err", request=None, response=self)
 
 
+def _reset_google_settings(session) -> None:
+    session.query(Setting).filter(Setting.key.like("google_%")).delete(synchronize_session=False)
+    session.commit()
+
+
 def test_token_refresh(monkeypatch):
     init_db()
     session = get_session()
+    _reset_google_settings(session)
     expiry = datetime.utcnow() - timedelta(seconds=10)
     save_token(session, "google", "old", "refresh", expiry, scopes="")
+    mark_google_auth_ready(session)
 
     def fake_post(url, data, timeout):  # noqa: ARG001
         return DummyResponse(200, {"access_token": "new", "expires_in": 3600})
@@ -54,8 +62,10 @@ def test_token_refresh(monkeypatch):
 def test_refresh_failure_marks_needs_reauth(monkeypatch):
     init_db()
     session = get_session()
+    _reset_google_settings(session)
     expiry = datetime.utcnow() - timedelta(seconds=10)
     save_token(session, "google", "old", "refresh", expiry, scopes="")
+    mark_google_auth_ready(session)
 
     def fake_post(url, data, timeout):  # noqa: ARG001
         return DummyResponse(400)
@@ -67,6 +77,76 @@ def test_refresh_failure_marks_needs_reauth(monkeypatch):
 
     state = get_google_auth_state(session)
     assert state.auth_status == "needs_reauth"
+    assert state.failure_count == 1
+    assert state.last_failure_at is not None
+    session.close()
+
+
+def test_refresh_failure_alert_sent_once_on_state_change(monkeypatch):
+    init_db()
+    session = get_session()
+    _reset_google_settings(session)
+    expiry = datetime.utcnow() - timedelta(seconds=10)
+    save_token(session, "google", "old", "refresh", expiry, scopes="")
+    mark_google_auth_ready(session)
+
+    sent: list[str] = []
+
+    def fake_send(message: str) -> None:
+        sent.append(message)
+
+    def fake_post(url, data, timeout):  # noqa: ARG001
+        return DummyResponse(400)
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    monkeypatch.setattr("app.google_auth.send_telegram_alert", fake_send)
+
+    with pytest.raises(GoogleAuthError):
+        asyncio.run(get_valid_google_access_token(session))
+    with pytest.raises(GoogleAuthError):
+        asyncio.run(get_valid_google_access_token(session))
+
+    state = get_google_auth_state(session)
+    assert state.auth_status == "needs_reauth"
+    assert state.failure_count == 2
+    assert len(sent) == 1
+    session.close()
+
+
+def test_refresh_success_after_failure_sends_recovery_once(monkeypatch):
+    init_db()
+    session = get_session()
+    _reset_google_settings(session)
+    expiry = datetime.utcnow() - timedelta(seconds=10)
+    save_token(session, "google", "old", "refresh", expiry, scopes="")
+    mark_google_auth_ready(session)
+
+    sent: list[str] = []
+
+    def fake_send(message: str) -> None:
+        sent.append(message)
+
+    def fail_post(url, data, timeout):  # noqa: ARG001
+        return DummyResponse(400)
+
+    def ok_post(url, data, timeout):  # noqa: ARG001
+        return DummyResponse(200, {"access_token": "new", "expires_in": 3600})
+
+    monkeypatch.setattr("app.google_auth.send_telegram_alert", fake_send)
+    monkeypatch.setattr(httpx, "post", fail_post)
+    with pytest.raises(GoogleAuthError):
+        asyncio.run(get_valid_google_access_token(session))
+
+    monkeypatch.setattr(httpx, "post", ok_post)
+    token = asyncio.run(get_valid_google_access_token(session))
+    assert token == "new"
+
+    state = get_google_auth_state(session)
+    assert state.auth_status == "ok"
+    assert state.failure_count == 0
+    assert len(sent) == 2
+    assert "failed" in sent[0]
+    assert "restored" in sent[1]
     session.close()
 
 
@@ -128,6 +208,7 @@ def test_people_client_retries(monkeypatch):
 async def test_google_callback_reuses_refresh_token(monkeypatch):
     init_db()
     base_session = get_session()
+    _reset_google_settings(base_session)
     base_session.query(Token).delete()
     base_session.commit()
     save_token(base_session, "google", "old", "refresh", None, scopes="")
@@ -180,4 +261,3 @@ async def test_google_callback_reuses_refresh_token(monkeypatch):
     state = get_google_auth_state(session)
     assert state.auth_status == "ok"
     session.close()
-

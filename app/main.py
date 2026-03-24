@@ -11,7 +11,7 @@ from app.debug import router as debug_router
 from app.google_auth import get_google_auth_state
 from app.routes.sync import router as sync_router
 from app.pending_sync_worker import pending_sync_worker
-from app.storage import get_session, init_db
+from app.storage import get_pending_sync_stats, get_session, init_db
 from app.webhooks import router as webhook_router
 
 logger = logging.getLogger(__name__)
@@ -53,12 +53,14 @@ def create_app() -> FastAPI:
         session = get_session()
         try:
             state = get_google_auth_state(session)
+            queue_stats = get_pending_sync_stats(session)
             return {
-                "auth_status": state.auth_status,
-                "last_refresh": state.last_refresh.isoformat().replace("+00:00", "Z")
-                if state.last_refresh
+                "google_auth_status": state.auth_status,
+                "worker_status": pending_sync_worker.get_status(),
+                "queue_status": queue_stats,
+                "last_refresh_at": state.last_refresh_at.isoformat().replace("+00:00", "Z")
+                if state.last_refresh_at
                 else None,
-                "expires_in": state.expires_in,
                 "failure_count": state.failure_count,
             }
         finally:

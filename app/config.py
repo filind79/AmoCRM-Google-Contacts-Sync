@@ -31,6 +31,8 @@ class Settings:
     webhook_secret: str = os.getenv("WEBHOOK_SECRET", os.getenv("WEBHOOK_SHARED_SECRET", ""))
     debug_secret: str = os.getenv("DEBUG_SECRET", "")
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
+    telegram_bot_token: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
+    telegram_chat_id: str = os.getenv("TELEGRAM_CHAT_ID", "")
 
 
 settings = Settings()

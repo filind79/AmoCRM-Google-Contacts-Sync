@@ -47,7 +47,8 @@ Available endpoints:
 | Endpoint | Description |
 | --- | --- |
 | `GET /debug/db` | Database connectivity and number of stored tokens |
-| `GET /debug/google` | Google token status: `has_token`, `expires_at`, `scopes` |
+| `GET /debug/google` | Google token + auth state: `auth_status`, `last_refresh_at`, `failure_count`, `last_failure_at`, `last_error` |
+| `GET /debug/status` | Aggregated operational state: `google_auth_status`, `worker_status`, `queue_status` |
 | `GET /debug/amo` | AmoCRM configuration: `base_url`, `auth_mode`, `is_ready` |
 | `GET /debug/config` | Snapshot of AmoCRM auth mode and whether the required secrets are present |
 | `GET /debug/ping-google` | Quick Google People API probe with latency and retry hints |
@@ -65,6 +66,41 @@ fields. When the service is rate limited it returns HTTP 200 with
 A missing/expired token yields HTTP 401 with the usual
 `{"detail": "Google auth required", "auth_url": "/auth/google/start"}`
 payload.
+
+## Google OAuth monitoring and Telegram alerts
+
+Google OAuth health is checked automatically every 60 minutes by the background
+worker. If token refresh fails, the service switches auth status to
+`needs_reauth` and sends one alert on state transition:
+
+```
+Google Contacts authorization failed.
+Нужно заново авторизоваться:
+https://amocrm-google-contacts-sync.onrender.com/auth/google/start
+```
+
+When authorization is restored, one recovery alert is sent:
+
+```
+Google Contacts authorization restored.
+Синхронизация снова работает.
+```
+
+Telegram notifications are configured purely via environment variables:
+
+* `TELEGRAM_BOT_TOKEN`
+* `TELEGRAM_CHAT_ID`
+
+If one of these variables is missing, notification sending is skipped and the
+service continues running.
+
+How to get `TELEGRAM_CHAT_ID`:
+1. Start a chat with your bot and send any message.
+2. Open `https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/getUpdates`.
+3. Find `chat.id` in the response payload and use it as `TELEGRAM_CHAT_ID`.
+
+Manual re-authorization URL:
+`https://amocrm-google-contacts-sync.onrender.com/auth/google/start`.
 
 ## AmoCRM authentication
 

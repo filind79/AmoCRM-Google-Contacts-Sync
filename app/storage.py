@@ -6,6 +6,7 @@ from sqlalchemy import (
     DateTime,
     Integer,
     String,
+    func,
     create_engine,
     select,
 )
@@ -213,3 +214,11 @@ def fetch_due_pending_sync(session, limit: int) -> list[PendingSync]:
         .limit(limit)
     )
     return session.execute(stmt).scalars().all()
+
+
+def get_pending_sync_stats(session) -> dict[str, int]:
+    total_stmt = select(func.count(PendingSync.id))
+    due_stmt = select(func.count(PendingSync.id)).where(PendingSync.next_attempt_at <= datetime.utcnow())
+    total = int(session.execute(total_stmt).scalar_one() or 0)
+    due = int(session.execute(due_stmt).scalar_one() or 0)
+    return {"total": total, "due": due}
