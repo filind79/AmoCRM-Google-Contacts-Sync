@@ -282,3 +282,97 @@ async def test_update_retries_on_missing_contact(monkeypatch, engine_env):
         engine.close()
 
     assert calls == ["people/missing"] * 4
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_phone_without_link_is_skipped(monkeypatch, engine_env):
+    module, _ = engine_env
+
+    one = make_candidate(
+        "people/1",
+        phones=["+79991234567"],
+        emails=[],
+        amo_id="10",
+        updated=datetime(2024, 4, 1, tzinfo=timezone.utc),
+    )
+    two = make_candidate(
+        "people/2",
+        phones=["+79991234567"],
+        emails=[],
+        amo_id="11",
+        updated=datetime(2024, 4, 2, tzinfo=timezone.utc),
+    )
+
+    async def fake_search(_keys):  # noqa: ANN001
+        return [one, two]
+
+    monkeypatch.setattr(module, "search_google_candidates", fake_search)
+
+    engine = SyncEngine()
+    try:
+        plan = await engine.plan(
+            {
+                "id": 99,
+                "name": "Ambiguous",
+                "phones": ["+7 999 123-45-67"],
+                "emails": [],
+                "ambiguous_phone_in_amo": True,
+            }
+        )
+    finally:
+        engine.close()
+
+    assert plan.action == "skip"
+    assert plan.reason == "ambiguous_phone_in_amo"
+
+
+@pytest.mark.asyncio
+async def test_merge_400_fallbacks_to_update(monkeypatch, engine_env):
+    module, _ = engine_env
+
+    primary = make_candidate(
+        "people/primary",
+        phones=["+15550001111"],
+        emails=[],
+        amo_id="5",
+        updated=datetime(2024, 1, 1, tzinfo=timezone.utc),
+    )
+    duplicate = make_candidate(
+        "people/dup",
+        phones=["+15550001111"],
+        emails=[],
+        amo_id=None,
+        updated=datetime(2023, 12, 1, tzinfo=timezone.utc),
+    )
+
+    async def fake_search(_keys):  # noqa: ANN001
+        return [primary, duplicate]
+
+    class DummyResponse:
+        status_code = 400
+        text = "Invalid payload"
+
+    async def fake_merge(*args, **kwargs):  # noqa: ANN001
+        raise module.httpx.HTTPStatusError("bad", request=None, response=DummyResponse())
+
+    async def fake_update(resource_name, payload, *, update_person_fields, etag):  # noqa: ANN001
+        return {"resourceName": resource_name}
+
+    async def fake_get(resource_name, *, person_fields):  # noqa: ANN001
+        assert resource_name == "people/primary"
+        return primary.person
+
+    monkeypatch.setattr(module, "search_google_candidates", fake_search)
+    monkeypatch.setattr(module, "merge_contacts", fake_merge)
+    monkeypatch.setattr(module.google_client, "update_contact", fake_update)
+    monkeypatch.setattr(module.google_client, "get_contact", fake_get)
+
+    engine = SyncEngine()
+    try:
+        plan = await engine.plan({"id": 5, "name": "Bob", "phones": ["+1 555 000 1111"], "emails": []})
+        result = await engine.apply(plan)
+    finally:
+        engine.close()
+
+    assert result.action == "merged"
+    assert result.primary == "people/primary"

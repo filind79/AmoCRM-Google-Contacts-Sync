@@ -348,6 +348,19 @@ async def apply_contacts_to_google(
 
     service = SyncEngine()
     try:
+        phone_to_amo_ids: Dict[str, set[int]] = {}
+        for amo_contact in amo_contacts:
+            amo_id = amo_contact.get("id")
+            if amo_id is None:
+                continue
+            for raw_phone in amo_contact.get("phones", []) or []:
+                if not raw_phone:
+                    continue
+                normalized = normalize_phone(raw_phone)
+                if not normalized:
+                    continue
+                phone_to_amo_ids.setdefault(normalized, set()).add(int(amo_id))
+
         created_samples: List[Dict[str, Any]] = []
         updated_samples: List[Dict[str, Any]] = []
         skipped_samples: List[Dict[str, Any]] = []
@@ -369,6 +382,32 @@ async def apply_contacts_to_google(
                 "phones": contact.get("phones", []),
                 "emails": contact.get("emails", []),
             }
+            ambiguous_phones = sorted(
+                {
+                    normalized
+                    for phone in contact.get("phones", []) or []
+                    if phone and (normalized := normalize_phone(phone))
+                    and len(phone_to_amo_ids.get(normalized, set())) > 1
+                }
+            )
+            if ambiguous_phones:
+                contact = dict(contact)
+                contact["ambiguous_phone_in_amo"] = True
+                contact["ambiguous_phones"] = ambiguous_phones
+                logger.warning(
+                    "ambiguous_phone_in_amo",
+                    extra={
+                        "amo_contact_id": contact.get("id"),
+                        "phones": ambiguous_phones,
+                        "amo_ids": sorted(
+                            {
+                                amo_id
+                                for phone in ambiguous_phones
+                                for amo_id in phone_to_amo_ids.get(phone, set())
+                            }
+                        ),
+                    },
+                )
             try:
                 plan = await service.plan(contact)
                 result = await service.apply(plan)

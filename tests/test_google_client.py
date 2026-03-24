@@ -152,3 +152,55 @@ async def test_batch_update_contact_injects_membership(monkeypatch):
     assert memberships[0]["contactGroupMembership"]["contactGroupResourceName"] == "contactGroups/42"
     update_mask = payload["updateMask"].split(",")
     assert "memberships" in update_mask
+
+
+def test_sanitize_person_for_update_removes_read_only_fields():
+    person = {
+        "metadata": {"sources": [{"type": "CONTACT"}]},
+        "phoneNumbers": [
+            {
+                "value": "+79990000000",
+                "type": "mobile",
+                "metadata": {"primary": True},
+                "formattedType": "Моб.",
+            }
+        ],
+        "emailAddresses": [
+            {
+                "value": "a@example.com",
+                "type": "work",
+                "metadata": {"primary": True},
+                "source": {"type": "CONTACT"},
+            }
+        ],
+        "names": [
+            {
+                "displayName": "Alice Example",
+                "givenName": "Alice",
+                "metadata": {"primary": True},
+                "displayNameLastFirst": "Example, Alice",
+            }
+        ],
+        "memberships": [
+            {
+                "contactGroupMembership": {
+                    "contactGroupResourceName": "contactGroups/1",
+                },
+                "metadata": {"sourcePrimary": True},
+            }
+        ],
+        "externalIds": [
+            {"type": "amo_id", "value": "42", "metadata": {"verified": True}},
+        ],
+    }
+
+    sanitized = google_client.sanitize_person_for_update(person)
+
+    assert "metadata" not in sanitized
+    assert sanitized["phoneNumbers"] == [{"value": "+79990000000", "type": "mobile"}]
+    assert sanitized["emailAddresses"] == [{"value": "a@example.com", "type": "work"}]
+    assert sanitized["names"] == [{"displayName": "Alice Example", "givenName": "Alice"}]
+    assert sanitized["memberships"] == [
+        {"contactGroupMembership": {"contactGroupResourceName": "contactGroups/1"}}
+    ]
+    assert sanitized["externalIds"] == [{"type": "amo_id", "value": "42"}]
