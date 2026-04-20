@@ -39,3 +39,16 @@ async def test_worker_dead_letters_on_missing_amo_token(monkeypatch):
     assert stored_error.startswith("amo_auth_missing")
     assert stored_attempts == 1
     assert next_attempt_at > datetime.utcnow() + timedelta(days=3000)
+
+
+@pytest.mark.asyncio
+async def test_worker_process_due_skips_db_when_stopping(monkeypatch):
+    worker = PendingSyncWorker()
+    worker._stopping = True
+
+    def fail_if_called(session):  # noqa: ARG001
+        raise AssertionError("should not query auth state while stopping")
+
+    monkeypatch.setattr("app.pending_sync_worker.google_auth_needs_reauth", fail_if_called)
+    processed = await worker._process_due(limit=10)
+    assert processed == 0
