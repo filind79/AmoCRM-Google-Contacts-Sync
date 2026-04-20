@@ -18,6 +18,7 @@ from app.storage import (
     enqueue_pending_sync,
     fetch_due_pending_sync,
     get_session,
+    is_stale_db_connection_error,
     save_link,
 )
 from app.services.sync_engine import SyncEngine
@@ -47,6 +48,7 @@ class PendingSyncWorker:
 
     async def stop(self) -> None:
         self._stopping = True
+        logger.info("pending_sync.worker_stopping")
         if self._wake_event:
             self._wake_event.set()
         if self._refresh_task:
@@ -79,7 +81,9 @@ class PendingSyncWorker:
 
     async def _run(self) -> None:
         try:
-            while not self._stopping:
+            while True:
+                if self._stopping:
+                    break
                 processed = await self._process_due(self.batch_size)
                 if processed:
                     await asyncio.sleep(0)
@@ -101,21 +105,56 @@ class PendingSyncWorker:
             raise
 
     async def _process_due(self, limit: int) -> int:
+        if self._stopping:
+            return 0
         lock = self._lock or asyncio.Lock()
         if self._lock is None:
             self._lock = lock
         async with lock:
             session = get_session()
             try:
-                if google_auth_needs_reauth(session):
+                if self._stopping:
+                    return 0
+                try:
+                    needs_reauth = google_auth_needs_reauth(session)
+                except Exception as exc:
+                    if self._stopping and is_stale_db_connection_error(exc):
+                        logger.warning("db_connection_closed_during_shutdown")
+                        logger.warning("shutdown.db_error_suppressed")
+                        return 0
+                    if is_stale_db_connection_error(exc):
+                        logger.warning("db_connection_stale_retry")
+                        session.close()
+                        session = get_session()
+                        needs_reauth = google_auth_needs_reauth(session)
+                    else:
+                        raise
+                if needs_reauth:
                     if not self._auth_blocked_logged:
                         logger.warning("Google authorization required, sync postponed")
                         self._auth_blocked_logged = True
                     return 0
                 self._auth_blocked_logged = False
-                records = fetch_due_pending_sync(session, limit)
+                if self._stopping:
+                    return 0
+                try:
+                    records = fetch_due_pending_sync(session, limit)
+                except Exception as exc:
+                    if self._stopping and is_stale_db_connection_error(exc):
+                        logger.warning("db_connection_closed_during_shutdown")
+                        logger.warning("shutdown.db_error_suppressed")
+                        return 0
+                    if is_stale_db_connection_error(exc):
+                        logger.warning("db_connection_stale_retry")
+                        session.close()
+                        session = get_session()
+                        records = fetch_due_pending_sync(session, limit)
+                    else:
+                        raise
                 processed = 0
                 for record in records:
+                    if self._stopping:
+                        break
                     await self._handle_record(session, record)
                     processed += 1
                 return processed
@@ -126,6 +165,8 @@ class PendingSyncWorker:
         interval = 60 * 60
         try:
             while not self._stopping:
+                if self._stopping:
+                    break
                 session = get_session()
                 try:
                     try:
@@ -153,7 +194,9 @@ class PendingSyncWorker:
             logger.debug("pending_sync.refresh_cancelled")
             raise
 
-    async def _handle_record(self, session, record: PendingSync) -> None:
+    async def _handle_record(self, session, record: PendingSync, *, allow_stale_retry: bool = True) -> None:
+        if self._stopping:
+            return
         contact_id = int(record.amo_contact_id)
         logger.debug("pending_sync.process", contact_id=contact_id, attempts=record.attempts)
         engine = SyncEngine()
@@ -164,6 +207,8 @@ class PendingSyncWorker:
             plan = await engine.plan(payload)
             result = await engine.apply(plan)
         except GoogleRateLimitError as exc:
+            if self._stopping:
+                return
             delay = max(exc.retry_after or 0, self._retry_delay(record.attempts + 1))
             self._schedule_retry(session, record, delay, "google_rate_limit")
             logger.warning(
@@ -190,6 +235,16 @@ class PendingSyncWorker:
                 return
             raise
         except Exception as exc:  # pragma: no cover - defensive logging
+            if self._stopping and is_stale_db_connection_error(exc):
+                logger.warning("db_connection_closed_during_shutdown")
+                logger.warning("shutdown.db_error_suppressed")
+                return
+            if allow_stale_retry and is_stale_db_connection_error(exc):
+                logger.warning("db_connection_stale_retry", contact_id=contact_id)
+                await self._retry_handle_record_once(record.id)
+                return
+            if self._stopping:
+                return
             delay = self._retry_delay(record.attempts + 1)
             self._schedule_retry(session, record, delay, exc.__class__.__name__)
             logger.exception(
@@ -198,6 +253,8 @@ class PendingSyncWorker:
                 attempts=record.attempts,
             )
         else:
+            if self._stopping:
+                return
             resource_name = result.resource_name if hasattr(result, "resource_name") else None
             if resource_name:
                 save_link(session, str(contact_id), resource_name)
@@ -211,6 +268,18 @@ class PendingSyncWorker:
             )
         finally:
             engine.close()
+
+    async def _retry_handle_record_once(self, record_id: int) -> None:
+        if self._stopping:
+            return
+        session = get_session()
+        try:
+            record = session.get(PendingSync, record_id)
+            if record is None or self._stopping:
+                return
+            await self._handle_record(session, record, allow_stale_retry=False)
+        finally:
+            session.close()
 
     def _schedule_retry(self, session, record: PendingSync, delay_seconds: int, error: str) -> None:
         record.attempts += 1

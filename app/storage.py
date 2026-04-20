@@ -10,6 +10,7 @@ from sqlalchemy import (
     create_engine,
     select,
 )
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 from app.config import settings
@@ -22,7 +23,12 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False)
 def get_engine():
     global engine
     if engine is None:
-        engine = create_engine(settings.db_url, future=True)
+        engine = create_engine(
+            settings.db_url,
+            future=True,
+            pool_pre_ping=True,
+            pool_recycle=300,
+        )
         SessionLocal.configure(bind=engine)
     return engine
 
@@ -222,3 +228,17 @@ def get_pending_sync_stats(session) -> dict[str, int]:
     total = int(session.execute(total_stmt).scalar_one() or 0)
     due = int(session.execute(due_stmt).scalar_one() or 0)
     return {"total": total, "due": due}
+
+
+def is_stale_db_connection_error(exc: Exception) -> bool:
+    if not isinstance(exc, OperationalError):
+        return False
+    text = str(exc).lower()
+    patterns = (
+        "ssl connection has been closed unexpectedly",
+        "server closed the connection unexpectedly",
+        "connection is closed",
+        "connection not open",
+        "consuming input failed",
+    )
+    return any(pattern in text for pattern in patterns)
