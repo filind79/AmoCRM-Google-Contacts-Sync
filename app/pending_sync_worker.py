@@ -72,7 +72,12 @@ class PendingSyncWorker:
             self._wake_event.set()
 
     async def drain(self, limit: Optional[int] = None) -> int:
-        processed = await self._process_due(limit or self.batch_size)
+        if self._stopping and not self._is_background_running():
+            self._stopping = False
+        processed = await self._process_due(
+            limit or self.batch_size,
+            enforce_auth_block=self._is_background_running(),
+        )
         if processed:
             self.wake()
         return processed
@@ -100,14 +105,17 @@ class PendingSyncWorker:
             logger.warning("pending_sync.worker_cancelled")
             raise
 
-    async def _process_due(self, limit: int) -> int:
+    def _is_background_running(self) -> bool:
+        return bool(self._task and not self._task.done())
+
+    async def _process_due(self, limit: int, *, enforce_auth_block: bool = True) -> int:
         lock = self._lock or asyncio.Lock()
         if self._lock is None:
             self._lock = lock
         async with lock:
             session = get_session()
             try:
-                if google_auth_needs_reauth(session):
+                if enforce_auth_block and google_auth_needs_reauth(session):
                     if not self._auth_blocked_logged:
                         logger.warning("Google authorization required, sync postponed")
                         self._auth_blocked_logged = True
