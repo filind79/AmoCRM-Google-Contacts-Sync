@@ -18,7 +18,14 @@ from app.google_auth import (
 )
 from app.google_people import GOOGLE_API_BASE
 from app.services.sync_engine import SyncEngine
-from app.storage import Token, get_pending_sync_stats, get_session, get_token
+from app.storage import (
+    Token,
+    get_pending_sync_stats,
+    get_session,
+    get_token,
+    list_pending_sync_by_contact_id,
+    list_recent_pending_sync,
+)
 from app.pending_sync_worker import pending_sync_worker
 from app.webhooks import get_recent_webhook_events
 
@@ -99,6 +106,50 @@ def debug_status(_=Depends(require_debug_secret)) -> dict[str, object]:
             "worker_status": pending_sync_worker.get_status(),
             "queue_status": get_pending_sync_stats(session),
         }
+    finally:
+        session.close()
+
+
+def _serialize_pending_record(record) -> dict[str, object]:
+    return {
+        "record_id": record.id,
+        "contact_id": record.amo_contact_id,
+        "attempts": record.attempts,
+        "last_error": record.last_error,
+        "status": "retry" if record.last_error else "pending",
+        "created_at": record.created_at.isoformat() if record.created_at else None,
+        "updated_at": record.updated_at.isoformat() if record.updated_at else None,
+        "next_attempt_at": record.next_attempt_at.isoformat() if record.next_attempt_at else None,
+    }
+
+
+@router.get("/pending-sync")
+def debug_pending_sync(
+    contact_id: int = Query(..., ge=1),
+    limit: int = Query(50, ge=1, le=200),
+    _=Depends(require_debug_secret),
+) -> dict[str, object]:
+    session = get_session()
+    try:
+        rows = list_pending_sync_by_contact_id(session, contact_id, limit=limit)
+        return {
+            "contact_id": contact_id,
+            "count": len(rows),
+            "items": [_serialize_pending_record(row) for row in rows],
+        }
+    finally:
+        session.close()
+
+
+@router.get("/pending-sync/recent")
+def debug_pending_sync_recent(
+    limit: int = Query(20, ge=1, le=100),
+    _=Depends(require_debug_secret),
+) -> dict[str, object]:
+    session = get_session()
+    try:
+        rows = list_recent_pending_sync(session, limit=limit)
+        return {"count": len(rows), "items": [_serialize_pending_record(row) for row in rows]}
     finally:
         session.close()
 

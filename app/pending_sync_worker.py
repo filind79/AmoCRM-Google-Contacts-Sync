@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import datetime, timedelta
 from typing import Optional
 
 from loguru import logger
+from sqlalchemy.exc import OperationalError
 
 from app.amocrm import extract_name_and_fields, get_contact
 from app.google_auth import (
@@ -85,6 +87,8 @@ class PendingSyncWorker:
     async def _run(self) -> None:
         try:
             while not self._stopping:
+                if self._stopping:
+                    break
                 processed = await self._process_due(self.batch_size)
                 if processed:
                     await asyncio.sleep(0)
@@ -113,20 +117,31 @@ class PendingSyncWorker:
         if self._lock is None:
             self._lock = lock
         async with lock:
+            if self._stopping and enforce_auth_block:
+                return 0
             session = get_session()
             try:
-                if enforce_auth_block and google_auth_needs_reauth(session):
+                if enforce_auth_block and not self._stopping and google_auth_needs_reauth(session):
                     if not self._auth_blocked_logged:
                         logger.warning("Google authorization required, sync postponed")
                         self._auth_blocked_logged = True
                     return 0
                 self._auth_blocked_logged = False
+                if self._stopping and enforce_auth_block:
+                    return 0
                 records = fetch_due_pending_sync(session, limit)
                 processed = 0
                 for record in records:
+                    if self._stopping and enforce_auth_block:
+                        break
                     await self._handle_record(session, record)
                     processed += 1
                 return processed
+            except OperationalError:
+                if self._stopping:
+                    logger.warning("shutdown.db_error_suppressed")
+                    return 0
+                raise
             finally:
                 session.close()
 
@@ -163,7 +178,13 @@ class PendingSyncWorker:
 
     async def _handle_record(self, session, record: PendingSync) -> None:
         contact_id = int(record.amo_contact_id)
-        logger.debug("pending_sync.process", contact_id=contact_id, attempts=record.attempts)
+        start = time.perf_counter()
+        logger.info(
+            "pending_sync.process",
+            record_id=record.id,
+            contact_id=contact_id,
+            attempt=record.attempts + 1,
+        )
         engine = SyncEngine()
         try:
             contact_data = await get_contact(contact_id)
@@ -176,6 +197,7 @@ class PendingSyncWorker:
             self._schedule_retry(session, record, delay, "google_rate_limit")
             logger.warning(
                 "pending_sync.retry_rate_limit",
+                record_id=record.id,
                 contact_id=contact_id,
                 delay=delay,
                 attempts=record.attempts,
@@ -191,6 +213,7 @@ class PendingSyncWorker:
                 )
                 logger.error(
                     "pending_sync.dead_letter",
+                    record_id=record.id,
                     contact_id=contact_id,
                     reason="amo_auth_missing",
                     detail=message,
@@ -200,22 +223,28 @@ class PendingSyncWorker:
         except Exception as exc:  # pragma: no cover - defensive logging
             delay = self._retry_delay(record.attempts + 1)
             self._schedule_retry(session, record, delay, exc.__class__.__name__)
-            logger.exception(
+            logger.warning(
                 "pending_sync.retry_error",
+                record_id=record.id,
                 contact_id=contact_id,
                 attempts=record.attempts,
+                error_class=exc.__class__.__name__,
+                reason=str(exc)[:200],
             )
         else:
             resource_name = result.resource_name if hasattr(result, "resource_name") else None
+            action = getattr(result, "action", None)
             if resource_name:
                 save_link(session, str(contact_id), resource_name)
             session.delete(record)
             session.commit()
             logger.info(
                 "pending_sync.synced",
+                record_id=record.id,
                 contact_id=contact_id,
                 resource_name=resource_name,
-                action=getattr(result, "action", None),
+                action=action,
+                duration_ms=max(1, int((time.perf_counter() - start) * 1000)),
             )
         finally:
             engine.close()
@@ -263,10 +292,11 @@ class PendingSyncWorker:
         }
 
 
-def enqueue_contact(contact_id: int) -> None:
+def enqueue_contact(contact_id: int) -> int:
     session = get_session()
     try:
-        enqueue_pending_sync(session, contact_id)
+        record = enqueue_pending_sync(session, contact_id)
+        return int(record.id)
     finally:
         session.close()
 
