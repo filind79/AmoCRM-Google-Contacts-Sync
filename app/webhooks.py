@@ -25,6 +25,7 @@ def _record_webhook_event(event: str, contact_id: int) -> None:
             "ts": datetime.now(timezone.utc).isoformat(),
             "event": event,
             "contact_id": contact_id,
+            "record_id": None,
         }
     )
 
@@ -181,10 +182,11 @@ async def webhook_amo(
     queued: List[int] = []
     event_payload: Dict[str, Any] = payload if parsed_source == "json" else {}
     for contact_id in sorted(contact_ids):
-        enqueue_contact(contact_id)
+        record_id = enqueue_contact(contact_id)
         queued.append(contact_id)
+        logger.info("webhook.queued", record_id=record_id, contact_id=contact_id, event=_guess_event_name(event_payload, contact_id))
         _record_webhook_event(_guess_event_name(event_payload, contact_id), contact_id)
 
-    logger.info("webhook.queued", count=len(queued), ids=queued)
+    logger.info("webhook.queued_batch", count=len(queued), ids=queued)
     pending_sync_worker.wake()
     return JSONResponse(content={"queued": queued})

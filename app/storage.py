@@ -22,7 +22,12 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False)
 def get_engine():
     global engine
     if engine is None:
-        engine = create_engine(settings.db_url, future=True)
+        engine = create_engine(
+            settings.db_url,
+            future=True,
+            pool_pre_ping=True,
+            pool_recycle=300,
+        )
         SessionLocal.configure(bind=engine)
     return engine
 
@@ -211,6 +216,27 @@ def fetch_due_pending_sync(session, limit: int) -> list[PendingSync]:
         select(PendingSync)
         .where(PendingSync.next_attempt_at <= datetime.utcnow())
         .order_by(PendingSync.next_attempt_at, PendingSync.id)
+        .limit(limit)
+    )
+    return session.execute(stmt).scalars().all()
+
+
+def list_pending_sync_by_contact_id(
+    session, contact_id: int, limit: int = 50
+) -> list[PendingSync]:
+    stmt = (
+        select(PendingSync)
+        .where(PendingSync.amo_contact_id == contact_id)
+        .order_by(PendingSync.updated_at.desc(), PendingSync.id.desc())
+        .limit(limit)
+    )
+    return session.execute(stmt).scalars().all()
+
+
+def list_recent_pending_sync(session, limit: int = 50) -> list[PendingSync]:
+    stmt = (
+        select(PendingSync)
+        .order_by(PendingSync.updated_at.desc(), PendingSync.id.desc())
         .limit(limit)
     )
     return session.execute(stmt).scalars().all()
