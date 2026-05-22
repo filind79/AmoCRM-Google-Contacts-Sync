@@ -74,7 +74,7 @@ def _build_message(*, service_name: str, problem: str, status: str, action_text:
     return "\n".join(parts)
 
 
-def send_problem_alert(category: AlertCategory, *, technical: Optional[str] = None) -> None:
+def send_problem_alert(category: AlertCategory, *, technical: Optional[str] = None) -> bool:
     tpl = _templates()[category]
     status = "Нужно ручное действие" if tpl.requires_manual_action else "Нужно внимание"
     if not tpl.action_url and "Render" in tpl.action_text:
@@ -89,14 +89,17 @@ def send_problem_alert(category: AlertCategory, *, technical: Optional[str] = No
         action_url=tpl.action_url,
         technical=technical,
     )
-    send_telegram_alert(message)
+    sent = send_telegram_alert(message)
+    if not sent:
+        return False
     logger.info("telegram_alert.sent_manual_action_required category=%s", category.value)
+    return True
 
 
-def send_recovery_alert(category: AlertCategory, *, technical: Optional[str] = None) -> None:
+def send_recovery_alert(category: AlertCategory, *, technical: Optional[str] = None) -> bool:
     tpl = _templates()[category]
     if not tpl.recovery_message_enabled:
-        return
+        return False
     message = _build_message(
         service_name=settings.service_display_name,
         problem=tpl.title,
@@ -105,5 +108,8 @@ def send_recovery_alert(category: AlertCategory, *, technical: Optional[str] = N
         action_url=None,
         technical=technical,
     )
-    send_telegram_alert(message)
+    sent = send_telegram_alert(message)
+    if not sent:
+        return False
     logger.info("telegram_alert.recovery_sent category=%s", category.value)
+    return True

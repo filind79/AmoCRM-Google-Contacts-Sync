@@ -51,6 +51,7 @@ class PendingSyncWorker:
         self._backlog_alert_sent = False
         self._problem_detected_at: datetime | None = None
         self._processing_alert_sent = False
+        self._last_problem_alert_category: AlertCategory | None = None
         self._processing_loop_restart_count = 0
         self._processing_stall_seconds = 150
         self._processing_backlog_stall_seconds = 90
@@ -284,19 +285,22 @@ class PendingSyncWorker:
                     if pending_count > 0
                     else AlertCategory.PROCESSING_LOOP_STALLED_UNRECOVERED
                 )
-                send_problem_alert(category, technical=f"pending_count={pending_count} heartbeat_age={heartbeat_age:.1f}")
-                self._processing_alert_sent = True
-                self._backlog_alert_sent = True
+                sent = send_problem_alert(category, technical=f"pending_count={pending_count} heartbeat_age={heartbeat_age:.1f}")
+                if sent:
+                    self._processing_alert_sent = True
+                    self._backlog_alert_sent = True
+                    self._last_problem_alert_category = category
             await self._restart_processing_loop()
         elif self._problem_detected_at is not None:
             elapsed = (now - self._problem_detected_at).total_seconds()
-            if self._processing_alert_sent:
-                send_recovery_alert(AlertCategory.PROCESSING_LOOP_STALLED_UNRECOVERED, technical=f"pending_count={pending_count}")
+            if self._processing_alert_sent and self._last_problem_alert_category is not None:
+                send_recovery_alert(self._last_problem_alert_category, technical=f"pending_count={pending_count}")
             else:
                 logger.info("telegram_alert.suppressed_auto_recovered elapsed=%.1f", elapsed)
                 logger.info("telegram_alert.recovery_skipped_no_initial_alert category=processing_loop_stalled_unrecovered")
             self._problem_detected_at = None
             self._processing_alert_sent = False
+            self._last_problem_alert_category = None
 
     async def _restart_processing_loop(self) -> None:
         if self.recovery_in_progress or self._stopping:

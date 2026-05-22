@@ -44,8 +44,9 @@ def _record_auth_ready(session, *, refreshed_at: Optional[datetime] = None) -> b
     if changed:
         logger.warning("google_auth.state_changed_to_ok")
         if integration_state.last_alert_sent_at:
-            send_recovery_alert(AlertCategory.GOOGLE_AUTH_REAUTH_REQUIRED, technical="google_auth_status=ok")
-            mark_google_recovery_alert_sent(session)
+            sent = send_recovery_alert(AlertCategory.GOOGLE_AUTH_REAUTH_REQUIRED, technical="google_auth_status=ok")
+            if sent:
+                mark_google_recovery_alert_sent(session)
         else:
             logger.info("telegram_alert.recovery_skipped_no_initial_alert category=google_auth_reauth_required")
     return changed
@@ -56,8 +57,9 @@ def _record_auth_failure(session, reason: str) -> int:
     logger.warning("google_auth.refresh_failed reason=%s failure_count=%s", reason, failures)
     if changed:
         logger.error("google_auth.state_changed_to_needs_reauth")
-        send_problem_alert(AlertCategory.GOOGLE_AUTH_REAUTH_REQUIRED, technical=f"reason={reason}")
-        mark_google_alert_sent(session)
+        sent = send_problem_alert(AlertCategory.GOOGLE_AUTH_REAUTH_REQUIRED, technical=f"reason={reason}")
+        if sent:
+            mark_google_alert_sent(session)
     return failures
 
 
