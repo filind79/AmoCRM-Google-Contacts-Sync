@@ -19,7 +19,7 @@ from app.core.integration_state import (
     mark_google_auth_ok,
     mark_google_recovery_alert_sent,
 )
-from app.integrations.telegram_client import send_telegram_alert, telegram_alerts_enabled
+from app.alerts import AlertCategory, send_problem_alert, send_recovery_alert
 from app.storage import Token, get_token, save_token
 
 
@@ -38,16 +38,16 @@ class GoogleAuthError(Exception):
 
 
 def _record_auth_ready(session, *, refreshed_at: Optional[datetime] = None) -> bool:
+    integration_state = get_google_integration_state(session)
     changed = mark_google_auth_ok(session, now=refreshed_at)
     logger.info("google_auth.refresh_ok")
     if changed:
         logger.warning("google_auth.state_changed_to_ok")
-        send_telegram_alert(
-            "Google Contacts authorization restored.\n"
-            "Синхронизация снова работает."
-        )
-        if telegram_alerts_enabled():
+        if integration_state.last_alert_sent_at:
+            send_recovery_alert(AlertCategory.GOOGLE_AUTH_REAUTH_REQUIRED, technical="google_auth_status=ok")
             mark_google_recovery_alert_sent(session)
+        else:
+            logger.info("telegram_alert.recovery_skipped_no_initial_alert category=google_auth_reauth_required")
     return changed
 
 
@@ -56,13 +56,8 @@ def _record_auth_failure(session, reason: str) -> int:
     logger.warning("google_auth.refresh_failed reason=%s failure_count=%s", reason, failures)
     if changed:
         logger.error("google_auth.state_changed_to_needs_reauth")
-        send_telegram_alert(
-            "Google Contacts authorization failed.\n"
-            "Нужно заново авторизоваться:\n"
-            f"{REAUTH_URL}"
-        )
-        if telegram_alerts_enabled():
-            mark_google_alert_sent(session)
+        send_problem_alert(AlertCategory.GOOGLE_AUTH_REAUTH_REQUIRED, technical=f"reason={reason}")
+        mark_google_alert_sent(session)
     return failures
 
 

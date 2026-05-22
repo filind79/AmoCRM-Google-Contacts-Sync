@@ -10,6 +10,8 @@ from loguru import logger
 from sqlalchemy.exc import OperationalError
 
 from app.amocrm import extract_name_and_fields, get_contact
+from app.alerts import AlertCategory, send_problem_alert, send_recovery_alert
+from app.config import settings
 from app.google_auth import (
     GoogleAuthError,
     get_valid_google_access_token,
@@ -25,7 +27,6 @@ from app.storage import (
     save_link,
 )
 from app.services.sync_engine import SyncEngine
-from app.integrations.telegram_client import send_telegram_alert
 
 
 class PendingSyncWorker:
@@ -48,6 +49,8 @@ class PendingSyncWorker:
         self.recovery_in_progress = False
         self.backlog_detected = False
         self._backlog_alert_sent = False
+        self._problem_detected_at: datetime | None = None
+        self._processing_alert_sent = False
         self._processing_loop_restart_count = 0
         self._processing_stall_seconds = 150
         self._processing_backlog_stall_seconds = 90
@@ -272,14 +275,28 @@ class PendingSyncWorker:
                 success_age,
                 pending_count,
             )
-            if pending_count > 0 and not self._backlog_alert_sent:
-                send_telegram_alert(
-                    "AmoCRM Google Contacts Sync: processing loop stalled.\n"
-                    f"Pending queue is not being processed.\nQueue pending count: {pending_count}\n"
-                    "Restart recommended or auto-recovery started."
+            if self._problem_detected_at is None:
+                self._problem_detected_at = now
+            elapsed = (now - self._problem_detected_at).total_seconds()
+            if elapsed >= settings.alert_grace_seconds and not self._processing_alert_sent:
+                category = (
+                    AlertCategory.QUEUE_BACKLOG_UNRECOVERED
+                    if pending_count > 0
+                    else AlertCategory.PROCESSING_LOOP_STALLED_UNRECOVERED
                 )
+                send_problem_alert(category, technical=f"pending_count={pending_count} heartbeat_age={heartbeat_age:.1f}")
+                self._processing_alert_sent = True
                 self._backlog_alert_sent = True
             await self._restart_processing_loop()
+        elif self._problem_detected_at is not None:
+            elapsed = (now - self._problem_detected_at).total_seconds()
+            if self._processing_alert_sent:
+                send_recovery_alert(AlertCategory.PROCESSING_LOOP_STALLED_UNRECOVERED, technical=f"pending_count={pending_count}")
+            else:
+                logger.info("telegram_alert.suppressed_auto_recovered elapsed=%.1f", elapsed)
+                logger.info("telegram_alert.recovery_skipped_no_initial_alert category=processing_loop_stalled_unrecovered")
+            self._problem_detected_at = None
+            self._processing_alert_sent = False
 
     async def _restart_processing_loop(self) -> None:
         if self.recovery_in_progress or self._stopping:
@@ -294,7 +311,6 @@ class PendingSyncWorker:
             self._task = loop.create_task(self._run())
             self._processing_loop_restart_count += 1
             logger.warning("pending_sync.processing_loop_restarted count=%s", self._processing_loop_restart_count)
-            send_telegram_alert("AmoCRM Google Contacts Sync: processing loop restored.\nQueue processing resumed.")
         finally:
             self.recovery_in_progress = False
 

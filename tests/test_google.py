@@ -99,7 +99,7 @@ def test_refresh_failure_alert_sent_once_on_state_change(monkeypatch):
         return DummyResponse(400)
 
     monkeypatch.setattr(httpx, "post", fake_post)
-    monkeypatch.setattr("app.google_auth.send_telegram_alert", fake_send)
+    monkeypatch.setattr("app.alerts.send_telegram_alert", fake_send)
 
     with pytest.raises(GoogleAuthError):
         asyncio.run(get_valid_google_access_token(session))
@@ -132,7 +132,7 @@ def test_refresh_success_after_failure_sends_recovery_once(monkeypatch):
     def ok_post(url, data, timeout):  # noqa: ARG001
         return DummyResponse(200, {"access_token": "new", "expires_in": 3600})
 
-    monkeypatch.setattr("app.google_auth.send_telegram_alert", fake_send)
+    monkeypatch.setattr("app.alerts.send_telegram_alert", fake_send)
     monkeypatch.setattr(httpx, "post", fail_post)
     with pytest.raises(GoogleAuthError):
         asyncio.run(get_valid_google_access_token(session))
@@ -145,8 +145,8 @@ def test_refresh_success_after_failure_sends_recovery_once(monkeypatch):
     assert state.auth_status == "ok"
     assert state.failure_count == 0
     assert len(sent) == 2
-    assert "failed" in sent[0]
-    assert "restored" in sent[1]
+    assert "Потеряна авторизация Google Contacts" in sent[0]
+    assert "Восстановлено" in sent[1]
     session.close()
 
 

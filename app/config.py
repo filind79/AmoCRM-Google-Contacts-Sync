@@ -33,6 +33,10 @@ class Settings:
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
     telegram_bot_token: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
     telegram_chat_id: str = os.getenv("TELEGRAM_CHAT_ID", "")
+    alert_grace_seconds: int = int(os.getenv("ALERT_GRACE_SECONDS", "60"))
+    telegram_alert_language: str = os.getenv("TELEGRAM_ALERT_LANGUAGE", "ru")
+    service_display_name: str = os.getenv("SERVICE_DISPLAY_NAME", "AmoCRM Google Contacts Sync")
+    render_service_dashboard_url: str = os.getenv("RENDER_SERVICE_DASHBOARD_URL", "")
 
 
 settings = Settings()
