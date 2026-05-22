@@ -21,6 +21,7 @@ from app.services.sync_engine import SyncEngine
 from app.storage import (
     Token,
     get_pending_sync_stats,
+    get_pending_sync_health_stats,
     get_session,
     get_token,
     list_pending_sync_by_contact_id,
@@ -150,6 +151,30 @@ def debug_pending_sync_recent(
     try:
         rows = list_recent_pending_sync(session, limit=limit)
         return {"count": len(rows), "items": [_serialize_pending_record(row) for row in rows]}
+    finally:
+        session.close()
+
+
+@router.get("/pending-sync/health")
+def debug_pending_sync_health(_=Depends(require_debug_secret)) -> dict[str, object]:
+    session = get_session()
+    try:
+        stats = get_pending_sync_health_stats(session)
+        status = pending_sync_worker.get_status()
+        oldest_pending = stats.get("oldest_pending_created_at")
+        return {
+            "processing_loop_running": status.get("processing_loop_running"),
+            "refresh_loop_running": status.get("refresh_loop_running"),
+            "processing_last_heartbeat_at": status.get("processing_last_heartbeat_at"),
+            "processing_last_success_at": status.get("processing_last_success_at"),
+            "refresh_last_heartbeat_at": status.get("refresh_last_heartbeat_at"),
+            "refresh_last_success_at": status.get("refresh_last_success_at"),
+            "queue_pending_count": stats["queue_pending_count"],
+            "queue_retry_count": stats["queue_retry_count"],
+            "oldest_pending_created_at": oldest_pending.isoformat() if oldest_pending else None,
+            "backlog_detected": status.get("backlog_detected", False),
+            "recovery_in_progress": status.get("recovery_in_progress", False),
+        }
     finally:
         session.close()
 

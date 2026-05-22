@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from datetime import datetime, timedelta
 from typing import Optional
@@ -19,10 +20,12 @@ from app.storage import (
     PendingSync,
     enqueue_pending_sync,
     fetch_due_pending_sync,
+    get_pending_sync_health_stats,
     get_session,
     save_link,
 )
 from app.services.sync_engine import SyncEngine
+from app.integrations.telegram_client import send_telegram_alert
 
 
 class PendingSyncWorker:
@@ -33,7 +36,22 @@ class PendingSyncWorker:
         self._lock: asyncio.Lock | None = None
         self._stopping = False
         self._refresh_task: asyncio.Task | None = None
+        self._supervisor_task: asyncio.Task | None = None
         self._auth_blocked_logged = False
+        self.processing_loop_running = False
+        self.refresh_loop_running = False
+        self.processing_last_heartbeat_at: datetime | None = None
+        self.processing_last_success_at: datetime | None = None
+        self.refresh_last_heartbeat_at: datetime | None = None
+        self.refresh_last_success_at: datetime | None = None
+        self.processing_last_started_at: datetime | None = None
+        self.recovery_in_progress = False
+        self.backlog_detected = False
+        self._backlog_alert_sent = False
+        self._processing_loop_restart_count = 0
+        self._processing_stall_seconds = 150
+        self._processing_backlog_stall_seconds = 90
+        self._supervisor_interval_seconds = 30
 
     def start(self) -> None:
         if self._task and not self._task.done():
@@ -45,6 +63,7 @@ class PendingSyncWorker:
         self._auth_blocked_logged = False
         self._task = loop.create_task(self._run())
         self._refresh_task = loop.create_task(self._refresh_loop())
+        self._supervisor_task = loop.create_task(self._supervisor_loop())
         logger.info("pending_sync.worker_started")
 
     async def stop(self) -> None:
@@ -53,6 +72,8 @@ class PendingSyncWorker:
             self._wake_event.set()
         if self._refresh_task:
             self._refresh_task.cancel()
+        if self._supervisor_task:
+            self._supervisor_task.cancel()
         if self._task:
             try:
                 await self._task
@@ -67,6 +88,12 @@ class PendingSyncWorker:
             except asyncio.CancelledError:
                 pass
             self._refresh_task = None
+        if self._supervisor_task:
+            try:
+                await self._supervisor_task
+            except asyncio.CancelledError:
+                pass
+            self._supervisor_task = None
         logger.info("pending_sync.worker_stopped")
 
     def wake(self) -> None:
@@ -85,12 +112,19 @@ class PendingSyncWorker:
         return processed
 
     async def _run(self) -> None:
+        self.processing_loop_running = True
+        self.processing_last_started_at = datetime.utcnow()
+        self._heartbeat_processing("started")
+        logger.info("pending_sync.processing_loop_started")
         try:
             while not self._stopping:
+                self._heartbeat_processing("before_process")
                 if self._stopping:
                     break
                 processed = await self._process_due(self.batch_size)
+                self._heartbeat_processing("after_process_due")
                 if processed:
+                    self.processing_last_success_at = datetime.utcnow()
                     await asyncio.sleep(0)
                     continue
                 if self._stopping:
@@ -103,11 +137,18 @@ class PendingSyncWorker:
                 except asyncio.TimeoutError:
                     continue
                 finally:
+                    self._heartbeat_processing("idle")
                     if self._wake_event:
                         self._wake_event.clear()
         except asyncio.CancelledError:
             logger.warning("pending_sync.worker_cancelled")
             raise
+        except Exception:
+            logger.exception("pending_sync.processing_loop_failed")
+            raise
+        finally:
+            self.processing_loop_running = False
+            logger.info("pending_sync.processing_loop_stopped")
 
     def _is_background_running(self) -> bool:
         return bool(self._task and not self._task.done())
@@ -147,8 +188,10 @@ class PendingSyncWorker:
 
     async def _refresh_loop(self) -> None:
         interval = 60 * 60
+        self.refresh_loop_running = True
         try:
             while not self._stopping:
+                self.refresh_last_heartbeat_at = datetime.utcnow()
                 session = get_session()
                 try:
                     try:
@@ -160,6 +203,7 @@ class PendingSyncWorker:
                         )
                     else:
                         logger.info("google_auth.refresh_ok")
+                        self.refresh_last_success_at = datetime.utcnow()
                 finally:
                     session.close()
                 for _ in range(interval // 60):
@@ -175,6 +219,88 @@ class PendingSyncWorker:
         except asyncio.CancelledError:
             logger.debug("pending_sync.refresh_cancelled")
             raise
+        finally:
+            self.refresh_loop_running = False
+
+    async def _supervisor_loop(self) -> None:
+        while not self._stopping:
+            try:
+                await self._supervisor_check()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("pending_sync.supervisor_check_failed")
+            await asyncio.sleep(self._supervisor_interval_seconds)
+
+    async def _supervisor_check(self) -> None:
+        if self._stopping:
+            return
+        session = get_session()
+        try:
+            stats = get_pending_sync_health_stats(session)
+            pending_count = int(stats["queue_pending_count"])
+        finally:
+            session.close()
+        now = datetime.utcnow()
+        heartbeat_age = (
+            (now - self.processing_last_heartbeat_at).total_seconds()
+            if self.processing_last_heartbeat_at
+            else float("inf")
+        )
+        success_age = (
+            (now - self.processing_last_success_at).total_seconds()
+            if self.processing_last_success_at
+            else float("inf")
+        )
+        dead_task = bool(self._task and self._task.done() and not self._stopping)
+        stalled = heartbeat_age > self._processing_stall_seconds
+        backlog_stalled = pending_count > 0 and success_age > self._processing_backlog_stall_seconds
+        if pending_count > 0 and not self.backlog_detected:
+            self.backlog_detected = True
+            logger.warning("pending_sync.queue_backlog_detected")
+        if pending_count == 0 and self.backlog_detected:
+            self.backlog_detected = False
+            self._backlog_alert_sent = False
+            logger.info("pending_sync.queue_backlog_cleared")
+        if dead_task or stalled or backlog_stalled:
+            logger.error(
+                "pending_sync.processing_loop_stalled dead_task=%s stalled=%s backlog_stalled=%s heartbeat_age=%.1f success_age=%.1f pending_count=%s",
+                dead_task,
+                stalled,
+                backlog_stalled,
+                heartbeat_age,
+                success_age,
+                pending_count,
+            )
+            if pending_count > 0 and not self._backlog_alert_sent:
+                send_telegram_alert(
+                    "AmoCRM Google Contacts Sync: processing loop stalled.\n"
+                    f"Pending queue is not being processed.\nQueue pending count: {pending_count}\n"
+                    "Restart recommended or auto-recovery started."
+                )
+                self._backlog_alert_sent = True
+            await self._restart_processing_loop()
+
+    async def _restart_processing_loop(self) -> None:
+        if self.recovery_in_progress or self._stopping:
+            return
+        self.recovery_in_progress = True
+        try:
+            if self._task and not self._task.done():
+                self._task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self._task
+            loop = asyncio.get_running_loop()
+            self._task = loop.create_task(self._run())
+            self._processing_loop_restart_count += 1
+            logger.warning("pending_sync.processing_loop_restarted count=%s", self._processing_loop_restart_count)
+            send_telegram_alert("AmoCRM Google Contacts Sync: processing loop restored.\nQueue processing resumed.")
+        finally:
+            self.recovery_in_progress = False
+
+    def _heartbeat_processing(self, reason: str) -> None:
+        self.processing_last_heartbeat_at = datetime.utcnow()
+        logger.debug("pending_sync.processing_loop_heartbeat reason=%s", reason)
 
     async def _handle_record(self, session, record: PendingSync) -> None:
         contact_id = int(record.amo_contact_id)
@@ -286,9 +412,16 @@ class PendingSyncWorker:
         refresh_running = bool(self._refresh_task and not self._refresh_task.done())
         return {
             "running": running,
+            "processing_loop_running": self.processing_loop_running,
             "refresh_loop_running": refresh_running,
             "stopping": self._stopping,
             "auth_blocked": self._auth_blocked_logged,
+            "processing_last_heartbeat_at": self.processing_last_heartbeat_at.isoformat() if self.processing_last_heartbeat_at else None,
+            "processing_last_success_at": self.processing_last_success_at.isoformat() if self.processing_last_success_at else None,
+            "refresh_last_heartbeat_at": self.refresh_last_heartbeat_at.isoformat() if self.refresh_last_heartbeat_at else None,
+            "refresh_last_success_at": self.refresh_last_success_at.isoformat() if self.refresh_last_success_at else None,
+            "recovery_in_progress": self.recovery_in_progress,
+            "backlog_detected": self.backlog_detected,
         }
 
 
