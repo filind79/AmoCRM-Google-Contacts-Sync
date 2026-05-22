@@ -92,14 +92,15 @@ def test_refresh_failure_alert_sent_once_on_state_change(monkeypatch):
 
     sent: list[str] = []
 
-    def fake_send(message: str) -> None:
+    def fake_send(message: str) -> bool:
         sent.append(message)
+        return True
 
     def fake_post(url, data, timeout):  # noqa: ARG001
         return DummyResponse(400)
 
     monkeypatch.setattr(httpx, "post", fake_post)
-    monkeypatch.setattr("app.google_auth.send_telegram_alert", fake_send)
+    monkeypatch.setattr("app.alerts.send_telegram_alert", fake_send)
 
     with pytest.raises(GoogleAuthError):
         asyncio.run(get_valid_google_access_token(session))
@@ -123,8 +124,9 @@ def test_refresh_success_after_failure_sends_recovery_once(monkeypatch):
 
     sent: list[str] = []
 
-    def fake_send(message: str) -> None:
+    def fake_send(message: str) -> bool:
         sent.append(message)
+        return True
 
     def fail_post(url, data, timeout):  # noqa: ARG001
         return DummyResponse(400)
@@ -132,7 +134,7 @@ def test_refresh_success_after_failure_sends_recovery_once(monkeypatch):
     def ok_post(url, data, timeout):  # noqa: ARG001
         return DummyResponse(200, {"access_token": "new", "expires_in": 3600})
 
-    monkeypatch.setattr("app.google_auth.send_telegram_alert", fake_send)
+    monkeypatch.setattr("app.alerts.send_telegram_alert", fake_send)
     monkeypatch.setattr(httpx, "post", fail_post)
     with pytest.raises(GoogleAuthError):
         asyncio.run(get_valid_google_access_token(session))
@@ -145,8 +147,30 @@ def test_refresh_success_after_failure_sends_recovery_once(monkeypatch):
     assert state.auth_status == "ok"
     assert state.failure_count == 0
     assert len(sent) == 2
-    assert "failed" in sent[0]
-    assert "restored" in sent[1]
+    assert "Потеряна авторизация Google Contacts" in sent[0]
+    assert "Восстановлено" in sent[1]
+    session.close()
+
+
+def test_refresh_failure_does_not_mark_alert_sent_when_telegram_failed(monkeypatch):
+    init_db()
+    session = get_session()
+    _reset_google_settings(session)
+    expiry = datetime.utcnow() - timedelta(seconds=10)
+    save_token(session, "google", "old", "refresh", expiry, scopes="")
+    mark_google_auth_ready(session)
+
+    def fail_post(url, data, timeout):  # noqa: ARG001
+        return DummyResponse(400)
+
+    monkeypatch.setattr(httpx, "post", fail_post)
+    monkeypatch.setattr("app.alerts.send_telegram_alert", lambda _: False)
+
+    with pytest.raises(GoogleAuthError):
+        asyncio.run(get_valid_google_access_token(session))
+
+    state = get_google_auth_state(session)
+    assert state.last_alert_sent_at is None
     session.close()
 
 
