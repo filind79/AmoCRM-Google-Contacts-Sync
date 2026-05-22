@@ -202,7 +202,7 @@ class PendingSyncWorker:
                         await get_valid_google_access_token(session, force_refresh=True)
                     except GoogleAuthError as exc:
                         logger.warning(
-                            "google_auth.refresh_failed reason=%s",
+                            "google_auth.refresh_failed reason={}",
                             exc.reason,
                         )
                     else:
@@ -268,7 +268,8 @@ class PendingSyncWorker:
             logger.info("pending_sync.queue_backlog_cleared")
         if dead_task or stalled or backlog_stalled:
             logger.error(
-                "pending_sync.processing_loop_stalled dead_task=%s stalled=%s backlog_stalled=%s heartbeat_age=%.1f success_age=%.1f pending_count=%s",
+                "pending_sync.processing_loop_stalled "
+                "dead_task={} stalled={} backlog_stalled={} heartbeat_age={:.1f} success_age={:.1f} pending_count={}",
                 dead_task,
                 stalled,
                 backlog_stalled,
@@ -296,7 +297,7 @@ class PendingSyncWorker:
             if self._processing_alert_sent and self._last_problem_alert_category is not None:
                 send_recovery_alert(self._last_problem_alert_category, technical=f"pending_count={pending_count}")
             else:
-                logger.info("telegram_alert.suppressed_auto_recovered elapsed=%.1f", elapsed)
+                logger.info("telegram_alert.suppressed_auto_recovered elapsed={:.1f}", elapsed)
                 logger.info("telegram_alert.recovery_skipped_no_initial_alert category=processing_loop_stalled_unrecovered")
             self._problem_detected_at = None
             self._processing_alert_sent = False
@@ -314,13 +315,12 @@ class PendingSyncWorker:
             loop = asyncio.get_running_loop()
             self._task = loop.create_task(self._run())
             self._processing_loop_restart_count += 1
-            logger.warning("pending_sync.processing_loop_restarted count=%s", self._processing_loop_restart_count)
+            logger.warning("pending_sync.processing_loop_restarted count={}", self._processing_loop_restart_count)
         finally:
             self.recovery_in_progress = False
 
     def _heartbeat_processing(self, reason: str) -> None:
         self.processing_last_heartbeat_at = datetime.utcnow()
-        logger.debug("pending_sync.processing_loop_heartbeat reason=%s", reason)
 
     async def _handle_record(self, session, record: PendingSync) -> None:
         contact_id = int(record.amo_contact_id)
