@@ -248,3 +248,27 @@ def get_pending_sync_stats(session) -> dict[str, int]:
     total = int(session.execute(total_stmt).scalar_one() or 0)
     due = int(session.execute(due_stmt).scalar_one() or 0)
     return {"total": total, "due": due}
+
+
+def get_pending_sync_health_stats(session) -> dict[str, object]:
+    now = datetime.utcnow()
+    pending_stmt = select(func.count(PendingSync.id)).where(PendingSync.last_error.is_(None))
+    retry_stmt = select(func.count(PendingSync.id)).where(PendingSync.last_error.is_not(None))
+    oldest_stmt = (
+        select(PendingSync.created_at)
+        .where(PendingSync.last_error.is_(None))
+        .order_by(PendingSync.created_at.asc(), PendingSync.id.asc())
+        .limit(1)
+    )
+    pending_count = int(session.execute(pending_stmt).scalar_one() or 0)
+    retry_count = int(session.execute(retry_stmt).scalar_one() or 0)
+    oldest_pending_created_at = session.execute(oldest_stmt).scalar_one_or_none()
+    backlog_age_seconds = 0
+    if pending_count > 0 and oldest_pending_created_at:
+        backlog_age_seconds = max(0, int((now - oldest_pending_created_at).total_seconds()))
+    return {
+        "queue_pending_count": pending_count,
+        "queue_retry_count": retry_count,
+        "oldest_pending_created_at": oldest_pending_created_at,
+        "backlog_age_seconds": backlog_age_seconds,
+    }
