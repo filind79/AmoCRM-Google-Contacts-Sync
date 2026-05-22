@@ -92,7 +92,7 @@ def send_problem_alert(category: AlertCategory, *, technical: Optional[str] = No
     sent = send_telegram_alert(message)
     if not sent:
         return False
-    logger.info("telegram_alert.sent_manual_action_required category=%s", category.value)
+    logger.info("telegram_alert.sent_manual_action_required category={}", category.value)
     return True
 
 
@@ -111,5 +111,5 @@ def send_recovery_alert(category: AlertCategory, *, technical: Optional[str] = N
     sent = send_telegram_alert(message)
     if not sent:
         return False
-    logger.info("telegram_alert.recovery_sent category=%s", category.value)
+    logger.info("telegram_alert.recovery_sent category={}", category.value)
     return True
