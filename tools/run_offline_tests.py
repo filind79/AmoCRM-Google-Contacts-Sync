@@ -28,6 +28,31 @@ def local_lookup(host, *args, **kwargs):
 
 
 socket.getaddrinfo = local_lookup
+original_connect = socket.socket.connect
+original_connect_ex = socket.socket.connect_ex
+
+
+def checked_address(sock, address):
+    if sock.family in (socket.AF_INET, socket.AF_INET6):
+        host = address[0]
+        if host not in ("127.0.0.1", "::1", "localhost"):
+            blocked.append(str(host))
+            raise OSError("External network disabled in unit tests")
+
+
+def local_connect(sock, address):
+    checked_address(sock, address)
+    return original_connect(sock, address)
+
+
+def local_connect_ex(sock, address):
+    checked_address(sock, address)
+    return original_connect_ex(sock, address)
+
+
+socket.socket.connect = local_connect
+socket.socket.connect_ex = local_connect_ex
+
 if len(sys.argv) > 1 and sys.argv[1] == "pytest":
     import pytest
     code = pytest.main(["-q", "tests"])
