@@ -1,3 +1,5 @@
+-c constraints-https-20261026.txt
+certifi==2026.10.19
 fastapi
 uvicorn[standard]
 httpx
